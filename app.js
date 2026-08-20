@@ -2,6 +2,21 @@ const STORAGE_KEY = "dartabend.local.v1";
 
 const colors = ["#0f766e", "#dc2626", "#2563eb", "#ca8a04", "#7c3aed", "#16a34a"];
 const dartNumbers = Array.from({ length: 20 }, (_, index) => index + 1);
+const avatarOptions = {
+  skin: ["#f2c29b", "#d99a6c", "#8d5524", "#f7d7b5", "#c68642", "#ffdbac"],
+  hair: ["short", "spike", "side", "cap", "bald", "mohawk", "curls", "sweep"],
+  hairColor: ["#111827", "#5b341f", "#9a6a2f", "#d6a33a", "#e5e7eb", "#7f1d1d"],
+  hairTexture: ["plain", "shine", "streaks", "salt"],
+  brows: ["soft", "thick", "focus", "wild"],
+  eyes: ["normal", "happy", "focus", "sleepy", "wide"],
+  mouth: ["smile", "grin", "focus", "open", "smirk"],
+  facialHair: ["none", "stache", "goatee", "beard", "full", "chops"],
+  beardTexture: ["plain", "shine", "streaks", "salt"],
+  shirt: ["#0f766e", "#dc2626", "#2563eb", "#ca8a04", "#7c3aed", "#16a34a", "#111827", "#f97316"],
+  shirtPattern: ["plain", "stripe", "sash", "dots"],
+  glasses: ["no", "round", "square", "sun"],
+  accessory: ["none", "dart", "medal", "star"]
+};
 
 const defaultState = {
   activeView: "game",
@@ -12,6 +27,7 @@ const defaultState = {
   matches: [],
   setup: {
     startScore: 501,
+    checkout: "straight",
     selectedPlayerIds: []
   },
   activeGame: null,
@@ -20,6 +36,10 @@ const defaultState = {
 
 let state = loadState();
 let guestPlayers = [];
+let avatarEditorPlayerId = null;
+let activeStatsPlayerId = null;
+let deferredInstallPrompt = null;
+let installHelpOpen = false;
 
 if (state.setup.selectedPlayerIds.length === 0) {
   state.setup.selectedPlayerIds = state.players.slice(0, 2).map((player) => player.id);
@@ -33,7 +53,26 @@ function createPlayer(name, color) {
     id: createId(),
     name,
     color,
+    avatar: createDefaultAvatar(color),
     createdAt: new Date().toISOString()
+  };
+}
+
+function createDefaultAvatar(shirtColor) {
+  return {
+    skin: "#f2c29b",
+    hair: "short",
+    hairColor: "#111827",
+    eyes: "normal",
+    mouth: "smile",
+    facialHair: "none",
+    hairTexture: "plain",
+    beardTexture: "plain",
+    brows: "soft",
+    glasses: "no",
+    shirt: shirtColor || colors[0],
+    shirtPattern: "plain",
+    accessory: "none"
   };
 }
 
@@ -57,7 +96,7 @@ function loadState() {
       ...clone(defaultState),
       ...parsed,
       setup: { ...defaultState.setup, ...(parsed.setup || {}) },
-      players: parsed.players && parsed.players.length ? parsed.players : clone(defaultState.players),
+      players: normalizePlayers(parsed.players && parsed.players.length ? parsed.players : clone(defaultState.players)),
       matches: parsed.matches || [],
       activeGame: parsed.activeGame || null,
       message: parsed.message || ""
@@ -65,6 +104,25 @@ function loadState() {
   } catch {
     return clone(defaultState);
   }
+}
+
+function normalizePlayers(players) {
+  return players.map((player, index) => ({
+    ...player,
+    avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length])
+  }));
+}
+
+function normalizeAvatar(avatar, fallbackColor) {
+  const base = createDefaultAvatar(fallbackColor);
+  const source = { ...(avatar || {}) };
+  if (source.glasses === "yes") source.glasses = "round";
+  Object.keys(avatarOptions).forEach((field) => {
+    if (avatarOptions[field].includes(source[field])) {
+      base[field] = source[field];
+    }
+  });
+  return base;
 }
 
 function saveState() {
@@ -77,12 +135,13 @@ function render() {
       <header class="topbar">
         <div class="brand">
           <div>
-            <h1 class="wordmark" aria-label="NobsiBoard">
-              <span aria-hidden="true">N</span><span class="logo-o board-o" aria-hidden="true"></span><span aria-hidden="true">bsiB</span><span class="logo-o dart-o" aria-hidden="true"></span><span aria-hidden="true">ard</span>
+            <h1 class="header-logo">
+              <img src="./überschrift.png" alt="NobsiBoard">
             </h1>
             <p class="subtitle">Einfach zaehlen, lokal speichern, spaeter feiern.</p>
           </div>
         </div>
+        ${renderInstallButton()}
       </header>
 
       <nav class="tabs" aria-label="Hauptbereiche">
@@ -96,8 +155,54 @@ function render() {
         ${state.activeView === "stats" ? renderStatsView() : ""}
         ${state.activeView === "players" ? renderPlayersView() : ""}
       </main>
+      ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
+      ${installHelpOpen ? renderInstallHelp() : ""}
     </div>
   `;
+}
+
+function renderInstallButton() {
+  if (isStandaloneApp()) {
+    return `<span class="install-state">Installiert</span>`;
+  }
+  return `<button class="install-button" data-action="install-app">App installieren</button>`;
+}
+
+function renderInstallHelp() {
+  const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+  return `
+    <div class="modal-backdrop">
+      <section class="install-card" role="dialog" aria-modal="true" aria-label="App installieren">
+        <div class="editor-head">
+          <div>
+            <h2>App installieren</h2>
+            <p class="hint">${isiOS ? "Auf dem iPhone geht das ueber das Teilen-Menue." : "Falls kein Installationsfenster erscheint, nutze das Browser-Menue."}</p>
+          </div>
+          <button class="icon-button" data-action="close-install-help" aria-label="Schliessen">X</button>
+        </div>
+        <div class="install-steps">
+          ${isiOS ? `
+            <div><strong>1</strong><span>In Safari oeffnen.</span></div>
+            <div><strong>2</strong><span>Teilen-Symbol antippen.</span></div>
+            <div><strong>3</strong><span>Zum Home-Bildschirm waehlen.</span></div>
+          ` : `
+            <div><strong>1</strong><span>Browser-Menue oeffnen.</span></div>
+            <div><strong>2</strong><span>App installieren oder Zum Startbildschirm waehlen.</span></div>
+            <div><strong>3</strong><span>NobsiBoard ueber das neue Symbol starten.</span></div>
+          `}
+        </div>
+        <button class="primary" data-action="close-install-help">Verstanden</button>
+      </section>
+    </div>
+  `;
+}
+
+function isStandaloneApp() {
+  return Boolean(
+    (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)
+    || (window.navigator && window.navigator.standalone === true)
+    || navigator.standalone === true
+  );
 }
 
 function tabButton(view, label) {
@@ -121,6 +226,14 @@ function renderGameView() {
             <div class="segmented" role="group" aria-label="Spielmodus">
               <button class="choice ${state.setup.startScore === 301 ? "active" : ""}" data-action="set-mode" data-score="301">301<span>kurz</span></button>
               <button class="choice ${state.setup.startScore === 501 ? "active" : ""}" data-action="set-mode" data-score="501">501<span>klassisch</span></button>
+            </div>
+          </div>
+
+          <div>
+            <p class="hint">Checkout</p>
+            <div class="segmented" role="group" aria-label="Checkout-Regel">
+              <button class="choice ${state.setup.checkout === "straight" ? "active" : ""}" data-action="set-checkout" data-checkout="straight">Einfach<span>genau 0</span></button>
+              <button class="choice ${state.setup.checkout === "double" ? "active" : ""}" data-action="set-checkout" data-checkout="double">Double Out<span>mit Double</span></button>
             </div>
           </div>
 
@@ -161,7 +274,7 @@ function renderPlayerOption(player) {
   return `
     <button class="player-option ${selected ? "active" : ""}" data-action="toggle-player" data-player-id="${player.id}">
       <span class="player-name">
-        <span class="dot" style="background:${player.color}"></span>
+        ${renderAvatar(player, "tiny")}
         <span>${escapeHtml(player.name)}</span>
       </span>
       <span class="small-pill">${selected ? "dabei" : "waehlen"}</span>
@@ -173,7 +286,7 @@ function renderGuestOption(player) {
   return `
     <div class="player-option guest-option">
       <span class="player-name">
-        <span class="dot" style="background:${player.color}"></span>
+        ${renderAvatar(player, "tiny")}
         <span>${escapeHtml(player.name)}</span>
       </span>
       <button class="small-remove" data-action="remove-guest" data-player-id="${player.id}" aria-label="${escapeHtml(player.name)} entfernen">X</button>
@@ -203,7 +316,10 @@ function renderActiveGame() {
               <p class="hint" style="color:rgba(255,255,255,.72)">Am Zug</p>
               <div class="turn-player">${escapeHtml(current.name)}</div>
             </div>
-            <span class="small-pill">${game.startScore}</span>
+            <div class="turn-rules">
+              <span class="small-pill">${game.startScore}</span>
+              <span class="small-pill">${game.checkout === "double" ? "Double Out" : "Einfach"}</span>
+            </div>
           </div>
 
           <div class="throw-summary">
@@ -252,15 +368,18 @@ function renderActiveGame() {
 }
 
 function renderDartButton(value, label, type, enabled) {
-  return `<button class="dart-button ${type}" data-action="add-dart" data-value="${value}" data-label="${label}" ${enabled ? "" : "disabled"}>${label}</button>`;
+  return `<button class="dart-button ${type}" data-action="add-dart" data-value="${value}" data-label="${label}" data-type="${type}" ${enabled ? "" : "disabled"}>${label}</button>`;
 }
 
 function renderScoreCard(player, active) {
+  const reaction = state.activeGame && state.activeGame.lastReaction && state.activeGame.lastReaction.playerId === player.id
+    ? state.activeGame.lastReaction.type
+    : "";
   return `
     <article class="scorecard ${active ? "active" : ""}" style="--player-color:${player.color}">
       <div class="scorecard-head">
         <div class="player-name">
-          <span class="dot" style="background:${player.color}"></span>
+          ${renderAvatar(player, "small", active ? "active" : reaction)}
           <strong>${escapeHtml(player.name)}</strong>
         </div>
         ${active ? `<span class="turn-badge">DRAN</span>` : ""}
@@ -275,7 +394,10 @@ function renderWinner(game) {
   const winner = game.players.find((player) => player.id === game.winnerId);
   return `
     <div class="winner">
-      <h2>${escapeHtml(winner ? winner.name : "Gewinner")} gewinnt!</h2>
+      <div class="winner-line">
+        ${winner ? renderAvatar(winner, "small", "winner") : ""}
+        <h2>${escapeHtml(winner ? winner.name : "Gewinner")} gewinnt!</h2>
+      </div>
       <p>Das Spiel wurde gespeichert und ist jetzt in der Statistik.</p>
       <button class="primary" data-action="new-game">Neues Spiel</button>
     </div>
@@ -287,11 +409,17 @@ function renderStatsView() {
   const ranked = [...stats.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || b.average - a.average);
   const recent = [...state.matches].slice(-6).reverse();
 
+  if (activeStatsPlayerId) {
+    const detail = stats.get(activeStatsPlayerId);
+    if (detail) return renderPlayerStatsView(detail, recent);
+    activeStatsPlayerId = null;
+  }
+
   return `
     <section class="grid two-col">
       <div class="panel panel-pad">
         <div class="section-title">
-          <h2>Rangliste</h2>
+          <h2>Globale Statistik</h2>
           <span class="small-pill">${state.matches.length} Spiele</span>
         </div>
         <div class="table">
@@ -322,18 +450,106 @@ function renderStatsView() {
 
 function renderRankRow(row, index) {
   return `
-    <article class="rank-row">
+    <button class="rank-row rank-button" data-action="show-player-stats" data-player-id="${row.id}">
       <div class="rank-number">${index + 1}</div>
       <div>
         <div class="player-name">
-          <span class="dot" style="background:${row.color}"></span>
+          ${renderAvatar(row, "tiny")}
           <strong>${escapeHtml(row.name)}</strong>
         </div>
         <div class="metric-line">${row.wins} Siege - ${row.games} Spiele - Schnitt ${row.average}</div>
       </div>
       <span class="small-pill">${row.points} Pkt</span>
-    </article>
+    </button>
   `;
+}
+
+function renderPlayerStatsView(row) {
+  const playerMatches = [...state.matches]
+    .filter((match) => match.players.some((player) => player.id === row.id))
+    .slice(-6)
+    .reverse();
+  const topDarts = getTopDarts(row.dartCounts, 8);
+
+  return `
+    <section class="grid two-col">
+      <div class="panel panel-pad">
+        <div class="section-title">
+          <button class="secondary compact-button" data-action="back-to-global">Zurueck</button>
+          <span class="small-pill">${row.points} Punkte</span>
+        </div>
+        <div class="player-detail-head">
+          ${renderAvatar(row, "large", "active")}
+          <div>
+            <h2>${escapeHtml(row.name)}</h2>
+            <p class="hint">${row.games} Spiele - ${row.wins} Siege - ${row.losses} Niederlagen</p>
+          </div>
+        </div>
+
+        <div class="stats-grid personal-grid">
+          <div class="stat-box"><span class="stat-value">${row.average}</span><span class="stat-label">Schnitt pro Runde</span></div>
+          <div class="stat-box"><span class="stat-value">${row.highestThrow}</span><span class="stat-label">Bester Wurf</span></div>
+          <div class="stat-box"><span class="stat-value">${row.bestRound}</span><span class="stat-label">Beste Runde</span></div>
+          <div class="stat-box"><span class="stat-value">${row.totalDarts}</span><span class="stat-label">Darts erfasst</span></div>
+          <div class="stat-box"><span class="stat-value">${row.typeCounts.triple}</span><span class="stat-label">Triple getroffen</span></div>
+          <div class="stat-box"><span class="stat-value">${row.typeCounts.double}</span><span class="stat-label">Double getroffen</span></div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel panel-pad">
+          <div class="section-title">
+            <h2>Haeufige Felder</h2>
+          </div>
+          <div class="dart-frequency">
+            ${topDarts.length ? topDarts.map((item) => renderDartFrequency(item, row.totalDarts)).join("") : `<div class="empty">Noch keine einzelnen Dartfelder gespeichert.</div>`}
+          </div>
+        </div>
+
+        <div class="panel panel-pad">
+          <div class="section-title">
+            <h2>Wurfarten</h2>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-box"><span class="stat-value">${row.typeCounts.single}</span><span class="stat-label">Single</span></div>
+            <div class="stat-box"><span class="stat-value">${row.typeCounts.double}</span><span class="stat-label">Double</span></div>
+            <div class="stat-box"><span class="stat-value">${row.typeCounts.triple}</span><span class="stat-label">Triple</span></div>
+            <div class="stat-box"><span class="stat-value">${row.typeCounts.bull + row.typeCounts.bullseye}</span><span class="stat-label">Bull</span></div>
+            <div class="stat-box"><span class="stat-value">${row.typeCounts.miss}</span><span class="stat-label">Vorbei</span></div>
+            <div class="stat-box"><span class="stat-value">${row.winRate}%</span><span class="stat-label">Siegquote</span></div>
+          </div>
+        </div>
+
+        <div class="panel panel-pad">
+          <div class="section-title">
+            <h2>Letzte Spiele</h2>
+          </div>
+          <div class="table">
+            ${playerMatches.length ? playerMatches.map(renderHistoryRow).join("") : `<div class="empty">Noch keine Spiele fuer diesen Spieler.</div>`}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderDartFrequency(item, totalDarts) {
+  const percent = totalDarts ? Math.round((item.count / totalDarts) * 100) : 0;
+  return `
+    <div class="frequency-row">
+      <strong>${escapeHtml(item.label)}</strong>
+      <div class="frequency-track"><span style="width:${percent}%"></span></div>
+      <span class="small-pill">${item.count}x</span>
+    </div>
+  `;
+}
+
+function getTopDarts(counts, limit) {
+  return Object.entries(counts || {})
+    .map(([label, count]) => ({ label, count }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, limit);
 }
 
 function renderBestStats(ranked) {
@@ -359,7 +575,7 @@ function renderHistoryRow(match) {
     <article class="history-row">
       <div>
         <strong>${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen</strong>
-        <div class="metric-line">${date} - ${match.startScore} - ${match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
+        <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
       </div>
       <span class="small-pill">+3</span>
     </article>
@@ -399,17 +615,131 @@ function renderPlayerRow(player) {
     <article class="player-row">
       <div>
         <div class="player-name">
-          <span class="dot" style="background:${player.color}"></span>
+          ${renderAvatar(player, "tiny")}
           <strong>${escapeHtml(player.name)}</strong>
         </div>
         <div class="metric-line">${stat ? stat.games : 0} Spiele - ${stat ? stat.wins : 0} Siege - ${stat ? stat.points : 0} Punkte</div>
       </div>
       <div class="row-actions">
+        <button class="avatar-open-button" title="Avatar erstellen" aria-label="${escapeHtml(player.name)} Avatar erstellen" data-action="open-avatar" data-player-id="${player.id}">Avatar</button>
         <button class="icon-button" title="Umbenennen" aria-label="${escapeHtml(player.name)} umbenennen" data-action="rename-player" data-player-id="${player.id}">A</button>
         <button class="icon-button" title="Loeschen" aria-label="${escapeHtml(player.name)} loeschen" data-action="delete-player" data-player-id="${player.id}">X</button>
       </div>
     </article>
   `;
+}
+
+function renderAvatar(player, size = "tiny", reaction = "") {
+  const avatar = normalizeAvatar(player.avatar, player.color);
+  const classes = [
+    "mi-avatar",
+    `mi-${size}`,
+    `hair-${avatar.hair}`,
+    `eyes-${avatar.eyes}`,
+    `mouth-${avatar.mouth}`,
+    `facial-${avatar.facialHair}`,
+    `hairtex-${avatar.hairTexture}`,
+    `beardtex-${avatar.beardTexture}`,
+    `brows-${avatar.brows}`,
+    `shirt-${avatar.shirtPattern}`,
+    `accessory-${avatar.accessory}`,
+    avatar.glasses !== "no" ? "has-glasses" : "",
+    `glasses-${avatar.glasses}`,
+    reaction ? `react-${reaction}` : ""
+  ].filter(Boolean).join(" ");
+  const style = `--skin:${avatar.skin};--hair:${avatar.hairColor};--shirt:${avatar.shirt}`;
+
+  return `
+    <span class="${classes}" style="${style}" aria-hidden="true">
+      <span class="mi-body"></span>
+      <span class="mi-neck"></span>
+      <span class="mi-head">
+        <span class="mi-ear left"></span>
+        <span class="mi-ear right"></span>
+        <span class="mi-hair"></span>
+        <span class="mi-eye left"></span>
+        <span class="mi-eye right"></span>
+        <span class="mi-brow left"></span>
+        <span class="mi-brow right"></span>
+        <span class="mi-glasses"></span>
+        <span class="mi-nose"></span>
+        <span class="mi-mouth"></span>
+        <span class="mi-stache"></span>
+        <span class="mi-beard"></span>
+      </span>
+      <span class="mi-accessory"></span>
+    </span>
+  `;
+}
+
+function renderAvatarEditor() {
+  const player = state.players.find((item) => item.id === avatarEditorPlayerId);
+  if (!player) return "";
+  const avatar = normalizeAvatar(player.avatar, player.color);
+  return `
+    <div class="modal-backdrop">
+      <section class="avatar-editor" role="dialog" aria-modal="true" aria-label="Figur erstellen">
+        <div class="editor-head">
+          <div>
+            <h2>${escapeHtml(player.name)}s Mi</h2>
+            <p class="hint">Kleine Figur fuer Spiel und Spielerkarte.</p>
+          </div>
+          <button class="icon-button" data-action="close-avatar" aria-label="Schliessen">X</button>
+        </div>
+
+        <div class="editor-preview">
+          ${renderAvatar({ ...player, avatar }, "large", "active")}
+        </div>
+
+        ${renderAvatarField("Haut", "skin", avatarOptions.skin, avatar.skin, "color")}
+        ${renderAvatarField("Haare", "hair", avatarOptions.hair, avatar.hair, "label")}
+        ${renderAvatarField("Haarfarbe", "hairColor", avatarOptions.hairColor, avatar.hairColor, "color")}
+        ${renderAvatarField("Haarstruktur", "hairTexture", avatarOptions.hairTexture, avatar.hairTexture, "label")}
+        ${renderAvatarField("Augenbrauen", "brows", avatarOptions.brows, avatar.brows, "label")}
+        ${renderAvatarField("Augen", "eyes", avatarOptions.eyes, avatar.eyes, "label")}
+        ${renderAvatarField("Mund", "mouth", avatarOptions.mouth, avatar.mouth, "label")}
+        ${renderAvatarField("Bart", "facialHair", avatarOptions.facialHair, avatar.facialHair, "label")}
+        ${renderAvatarField("Bartstruktur", "beardTexture", avatarOptions.beardTexture, avatar.beardTexture, "label")}
+        ${renderAvatarField("Brille", "glasses", avatarOptions.glasses, avatar.glasses, "label")}
+        ${renderAvatarField("Trikot", "shirt", avatarOptions.shirt, avatar.shirt, "color")}
+        ${renderAvatarField("Trikotmuster", "shirtPattern", avatarOptions.shirtPattern, avatar.shirtPattern, "label")}
+        ${renderAvatarField("Extra", "accessory", avatarOptions.accessory, avatar.accessory, "label")}
+      </section>
+    </div>
+  `;
+}
+
+function renderAvatarField(title, field, values, current, type) {
+  return `
+    <div class="avatar-field">
+      <div class="pad-title">${title}</div>
+      <div class="avatar-options">
+        ${values.map((value) => {
+          const active = value === current;
+          const content = type === "color"
+            ? `<span class="swatch" style="background:${value}"></span>`
+            : escapeHtml(getAvatarLabel(field, value));
+          return `<button class="avatar-choice ${active ? "active" : ""}" data-action="set-avatar" data-field="${field}" data-value="${value}" aria-label="${escapeHtml(title)} ${escapeHtml(getAvatarLabel(field, value))}">${content}</button>`;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function getAvatarLabel(field, value) {
+  const labels = {
+    hair: { short: "Kurz", spike: "Wild", side: "Seitlich", cap: "Cap", bald: "Glatze" },
+    hairTexture: { plain: "Glatt", shine: "Glanz", streaks: "Straehnen", salt: "Grau" },
+    brows: { soft: "Normal", thick: "Dick", focus: "Fokus", wild: "Wild" },
+    eyes: { normal: "Normal", happy: "Froh", focus: "Fokus", sleepy: "Muede", wide: "Gross" },
+    mouth: { smile: "Lachen", grin: "Grinsen", focus: "Ernst", open: "Oh!", smirk: "Schief" },
+    facialHair: { none: "Ohne", stache: "Schnauzer", goatee: "Kinnbart", beard: "Bart", full: "Vollbart", chops: "Koteletten" },
+    beardTexture: { plain: "Glatt", shine: "Glanz", streaks: "Straehnen", salt: "Grau" },
+    glasses: { no: "Nein", round: "Rund", square: "Eckig", sun: "Sonne" },
+    shirtPattern: { plain: "Glatt", stripe: "Streifen", sash: "Schraeg", dots: "Punkte" },
+    accessory: { none: "Ohne", dart: "Dart", medal: "Medaille", star: "Stern" }
+  };
+  return labels[field] && labels[field][value] ? labels[field][value] : value;
 }
 
 function getStats() {
@@ -419,6 +749,7 @@ function getStats() {
       id: player.id,
       name: player.name,
       color: player.color,
+      avatar: normalizeAvatar(player.avatar, player.color),
       games: 0,
       wins: 0,
       losses: 0,
@@ -426,7 +757,13 @@ function getStats() {
       throwsTotal: 0,
       rounds: 0,
       highestThrow: 0,
-      average: 0
+      average: 0,
+      bestRound: 0,
+      winRate: 0,
+      totalDarts: 0,
+      dartCounts: {},
+      typeCounts: createTypeCounts(),
+      roundScores: []
     });
   });
 
@@ -438,6 +775,12 @@ function getStats() {
       row.rounds += snapshot.rounds;
       row.throwsTotal += snapshot.throwsTotal;
       row.highestThrow = Math.max(row.highestThrow, snapshot.highestThrow);
+      row.totalDarts += snapshot.totalDarts || 0;
+      mergeCounts(row.dartCounts, snapshot.dartCounts);
+      mergeCounts(row.typeCounts, snapshot.typeCounts);
+      if (Array.isArray(snapshot.roundScores)) {
+        row.roundScores.push(...snapshot.roundScores);
+      }
       if (snapshot.id === match.winnerId) {
         row.wins += 1;
         row.points += 3;
@@ -449,9 +792,17 @@ function getStats() {
 
   stats.forEach((row) => {
     row.average = row.rounds ? round(row.throwsTotal / row.rounds) : 0;
+    row.bestRound = row.roundScores.length ? Math.max(...row.roundScores) : row.highestThrow;
+    row.winRate = row.games ? Math.round((row.wins / row.games) * 100) : 0;
   });
 
   return stats;
+}
+
+function mergeCounts(target, source) {
+  Object.entries(source || {}).forEach(([key, value]) => {
+    target[key] = (target[key] || 0) + Number(value || 0);
+  });
 }
 
 function startGame() {
@@ -466,9 +817,11 @@ function startGame() {
   state.activeGame = {
     id: createId(),
     startScore: state.setup.startScore,
+    checkout: state.setup.checkout || "straight",
     currentIndex: 0,
     currentThrows: [],
     history: [],
+    lastReaction: null,
     createdAt: new Date().toISOString(),
     finishedAt: null,
     winnerId: null,
@@ -476,11 +829,16 @@ function startGame() {
       id: player.id,
       name: player.name,
       color: player.color,
+      avatar: normalizeAvatar(player.avatar, player.color),
       guest: Boolean(player.guest),
       remaining: state.setup.startScore,
       rounds: 0,
       throwsTotal: 0,
-      highestThrow: 0
+      highestThrow: 0,
+      totalDarts: 0,
+      dartCounts: {},
+      typeCounts: createTypeCounts(),
+      roundScores: []
     }))
   };
   guestPlayers = [];
@@ -502,16 +860,27 @@ function submitRound() {
   const player = game.players[game.currentIndex];
   const before = clone(game);
   const nextRemaining = player.remaining - score;
+  const lastDart = throws[throws.length - 1];
+  const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
 
   game.history.push(before);
   player.rounds += 1;
+  recordDartDetails(player, throws);
 
-  if (nextRemaining < 0) {
-    state.message = `${player.name} ist ueberworfen. Runde zaehlt als 0.`;
+  const invalidDoubleOut = game.checkout === "double" && (nextRemaining === 1 || (nextRemaining === 0 && !isDoubleFinish));
+
+  if (nextRemaining < 0 || invalidDoubleOut) {
+    game.lastReaction = { playerId: player.id, type: "bust" };
+    player.roundScores.push(0);
+    state.message = invalidDoubleOut
+      ? `Double Out: ${player.name} braucht ein passendes Double.`
+      : `${player.name} ist ueberworfen. Runde zaehlt als 0.`;
   } else {
     player.remaining = nextRemaining;
     player.throwsTotal += score;
     player.highestThrow = Math.max(player.highestThrow, score);
+    player.roundScores.push(score);
+    game.lastReaction = score >= 100 ? { playerId: player.id, type: "big" } : null;
     state.message = score === 180 ? "180! Sehr stark." : "";
   }
 
@@ -520,11 +889,13 @@ function submitRound() {
   if (player.remaining === 0) {
     game.finishedAt = new Date().toISOString();
     game.winnerId = player.id;
+    game.lastReaction = { playerId: player.id, type: "winner" };
     state.matches.push({
       id: game.id,
       startScore: game.startScore,
       createdAt: game.createdAt,
       finishedAt: game.finishedAt,
+      checkout: game.checkout,
       winnerId: game.winnerId,
       players: game.players.map((snapshot) => ({ ...snapshot }))
     });
@@ -544,14 +915,33 @@ function undo() {
   saveAndRender();
 }
 
-function addDart(value, label) {
+function addDart(value, label, type) {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
   if (!game.currentThrows) game.currentThrows = [];
   if (game.currentThrows.length >= 3) return;
-  game.currentThrows.push({ value: Number(value), label });
+  game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
   saveAndRender();
+}
+
+function createTypeCounts() {
+  return { single: 0, double: 0, triple: 0, bull: 0, bullseye: 0, miss: 0 };
+}
+
+function recordDartDetails(player, throws) {
+  if (!player.dartCounts) player.dartCounts = {};
+  if (!player.typeCounts) player.typeCounts = createTypeCounts();
+  if (!player.roundScores) player.roundScores = [];
+  if (!player.totalDarts) player.totalDarts = 0;
+
+  throws.forEach((dart) => {
+    const label = dart.label || String(dart.value);
+    const type = dart.type || "single";
+    player.dartCounts[label] = (player.dartCounts[label] || 0) + 1;
+    player.typeCounts[type] = (player.typeCounts[type] || 0) + 1;
+    player.totalDarts += 1;
+  });
 }
 
 function removeLastDart() {
@@ -585,6 +975,7 @@ function addGuest(name) {
     id: `guest-${createId()}`,
     name: `${clean} (Gast)`,
     color,
+    avatar: createDefaultAvatar(color),
     guest: true
   });
   render();
@@ -592,6 +983,42 @@ function addGuest(name) {
 
 function removeGuest(id) {
   guestPlayers = guestPlayers.filter((player) => player.id !== id);
+  render();
+}
+
+function openAvatarEditor(id) {
+  avatarEditorPlayerId = id;
+  render();
+}
+
+function closeAvatarEditor() {
+  avatarEditorPlayerId = null;
+  render();
+}
+
+function setAvatarPart(field, value) {
+  const player = state.players.find((item) => item.id === avatarEditorPlayerId);
+  if (!player || !avatarOptions[field] || !avatarOptions[field].includes(value)) return;
+  player.avatar = normalizeAvatar(player.avatar, player.color);
+  player.avatar[field] = value;
+  if (field === "shirt") player.color = value;
+  saveAndRender();
+}
+
+async function installApp() {
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice.catch(() => null);
+    deferredInstallPrompt = null;
+    render();
+    return;
+  }
+  installHelpOpen = true;
+  render();
+}
+
+function closeInstallHelp() {
+  installHelpOpen = false;
   render();
 }
 
@@ -667,6 +1094,7 @@ document.addEventListener("click", (event) => {
 
   if (action === "set-view") {
     state.activeView = button.dataset.view;
+    if (state.activeView !== "stats") activeStatsPlayerId = null;
     state.message = "";
     saveAndRender();
   }
@@ -674,10 +1102,14 @@ document.addEventListener("click", (event) => {
     state.setup.startScore = Number(button.dataset.score);
     saveAndRender();
   }
+  if (action === "set-checkout") {
+    state.setup.checkout = button.dataset.checkout;
+    saveAndRender();
+  }
   if (action === "toggle-player") togglePlayer(button.dataset.playerId);
   if (action === "remove-guest") removeGuest(button.dataset.playerId);
   if (action === "start-game") startGame();
-  if (action === "add-dart") addDart(button.dataset.value, button.dataset.label);
+  if (action === "add-dart") addDart(button.dataset.value, button.dataset.label, button.dataset.type);
   if (action === "remove-last-dart") removeLastDart();
   if (action === "clear-throws") clearThrows();
   if (action === "submit-round") submitRound();
@@ -688,6 +1120,19 @@ document.addEventListener("click", (event) => {
     state.message = "";
     saveAndRender();
   }
+  if (action === "open-avatar") openAvatarEditor(button.dataset.playerId);
+  if (action === "close-avatar") closeAvatarEditor();
+  if (action === "set-avatar") setAvatarPart(button.dataset.field, button.dataset.value);
+  if (action === "show-player-stats") {
+    activeStatsPlayerId = button.dataset.playerId;
+    saveAndRender();
+  }
+  if (action === "back-to-global") {
+    activeStatsPlayerId = null;
+    saveAndRender();
+  }
+  if (action === "install-app") installApp();
+  if (action === "close-install-help") closeInstallHelp();
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
 });
@@ -719,5 +1164,17 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   });
 }
+
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  render();
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  installHelpOpen = false;
+  render();
+});
 
 render();
