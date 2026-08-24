@@ -106,7 +106,6 @@ h1 {
   height: auto;
   object-fit: contain;
   object-position: left center;
-  mix-blend-mode: multiply;
 }
 
 .subtitle {
@@ -126,7 +125,6 @@ h1 {
   position: sticky;
   top: 0;
   z-index: 4;
-  backdrop-filter: blur(14px);
 }
 
 .tab {
@@ -1510,6 +1508,10 @@ button:disabled {
     padding-right: 10px;
   }
 
+  .panel {
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  }
+
   .topbar {
     align-items: flex-start;
     flex-direction: column;
@@ -1529,6 +1531,23 @@ button:disabled {
 
   .scorecards {
     grid-template-columns: 1fr;
+  }
+
+  .scorecard.active {
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.32);
+  }
+
+  .react-active {
+    animation: none;
+  }
+
+  .mi-tiny .mi-hair::before,
+  .mi-tiny .mi-beard::before,
+  .mi-tiny .mi-stache::before,
+  .mi-small .mi-hair::before,
+  .mi-small .mi-beard::before,
+  .mi-small .mi-stache::before {
+    display: none;
   }
 
   .remaining {

@@ -1,12 +1,12 @@
-const CACHE_NAME = "nobsiboard-v14";
+const CACHE_NAME = "nobsiboard-v16";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
-  "./logo.png",
-  "./überschrift.png"
+  "./logo-512.png",
+  "./header-transparent.png"
 ];
 
 self.addEventListener("install", (event) => {

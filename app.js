@@ -126,7 +126,11 @@ function normalizeAvatar(avatar, fallbackColor) {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    state.message = "Speicher ist voll. Bitte alte Browserdaten pruefen.";
+  }
 }
 
 function render() {
@@ -136,7 +140,7 @@ function render() {
         <div class="brand">
           <div>
             <h1 class="header-logo">
-              <img src="./überschrift.png" alt="NobsiBoard">
+              <img src="./header-transparent.png" alt="NobsiBoard">
             </h1>
             <p class="subtitle">Einfach zaehlen, lokal speichern, spaeter feiern.</p>
           </div>
@@ -151,14 +155,38 @@ function render() {
       </nav>
 
       <main class="main">
-        ${state.activeView === "game" ? renderGameView() : ""}
-        ${state.activeView === "stats" ? renderStatsView() : ""}
-        ${state.activeView === "players" ? renderPlayersView() : ""}
+        ${renderMainContent()}
       </main>
-      ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
-      ${installHelpOpen ? renderInstallHelp() : ""}
+      <div id="overlay-root">
+        ${renderOverlays()}
+      </div>
     </div>
   `;
+}
+
+function renderMainContent() {
+  if (state.activeView === "game") return renderGameView();
+  if (state.activeView === "stats") return renderStatsView();
+  if (state.activeView === "players") return renderPlayersView();
+  return "";
+}
+
+function renderOverlays() {
+  return `
+    ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
+    ${installHelpOpen ? renderInstallHelp() : ""}
+  `;
+}
+
+function renderMainOnly() {
+  const main = app.querySelector(".main");
+  if (!main) {
+    render();
+    return;
+  }
+  main.innerHTML = renderMainContent();
+  const overlayRoot = app.querySelector("#overlay-root");
+  if (overlayRoot) overlayRoot.innerHTML = renderOverlays();
 }
 
 function renderInstallButton() {
@@ -852,13 +880,13 @@ function submitRound() {
   const throws = game.currentThrows || [];
   if (throws.length === 0) {
     state.message = "Bitte erst mindestens einen Dart auswaehlen.";
-    saveAndRender();
+    renderMainOnly();
     return;
   }
   const score = throws.reduce((sum, dart) => sum + dart.value, 0);
 
   const player = game.players[game.currentIndex];
-  const before = clone(game);
+  const before = createUndoSnapshot(game);
   const nextRemaining = player.remaining - score;
   const lastDart = throws[throws.length - 1];
   const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
@@ -904,15 +932,22 @@ function submitRound() {
     game.currentIndex = (game.currentIndex + 1) % game.players.length;
   }
 
-  saveAndRender();
+  saveAndRenderMain();
 }
 
 function undo() {
   const game = state.activeGame;
   if (!game || !game.history.length) return;
-  state.activeGame = game.history.pop();
+  const previous = game.history.pop();
+  state.activeGame = { ...previous, history: game.history };
   state.message = "Letzte Eingabe wurde zurueckgenommen.";
-  saveAndRender();
+  saveAndRenderMain();
+}
+
+function createUndoSnapshot(game) {
+  const snapshot = clone(game);
+  snapshot.history = [];
+  return snapshot;
 }
 
 function addDart(value, label, type) {
@@ -922,7 +957,7 @@ function addDart(value, label, type) {
   if (game.currentThrows.length >= 3) return;
   game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
-  saveAndRender();
+  renderMainOnly();
 }
 
 function createTypeCounts() {
@@ -948,13 +983,13 @@ function removeLastDart() {
   const game = state.activeGame;
   if (!game || !game.currentThrows || game.currentThrows.length === 0) return;
   game.currentThrows.pop();
-  saveAndRender();
+  renderMainOnly();
 }
 
 function clearThrows() {
   if (!state.activeGame) return;
   state.activeGame.currentThrows = [];
-  saveAndRender();
+  renderMainOnly();
 }
 
 function togglePlayer(id) {
@@ -1072,6 +1107,11 @@ function cancelGame() {
 function saveAndRender() {
   saveState();
   render();
+}
+
+function saveAndRenderMain() {
+  saveState();
+  renderMainOnly();
 }
 
 function round(number) {
