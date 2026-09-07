@@ -1,4 +1,5 @@
 const STORAGE_KEY = "dartabend.local.v1";
+const DEFAULT_FAMILY_CODE = "NOBSI-DART-8K4P";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAXzYL6c9-XyN_zv7K8VTyAfclxSx4Ta4Y",
@@ -40,8 +41,8 @@ const defaultState = {
     selectedPlayerIds: []
   },
   sync: {
-    enabled: false,
-    familyCode: "",
+    enabled: true,
+    familyCode: DEFAULT_FAMILY_CODE,
     lastSyncedAt: "",
     deletedPlayerIds: []
   },
@@ -62,8 +63,8 @@ let firebasePersistenceTried = false;
 let syncTimer = null;
 let syncRunning = false;
 let syncRuntime = {
-  status: "local",
-  detail: "Nur auf diesem Geraet",
+  status: navigator.onLine ? "syncing" : "offline",
+  detail: navigator.onLine ? "Familien-Daten werden geladen." : "Offline. Ergebnisse werden spaeter automatisch gesendet.",
   error: ""
 };
 
@@ -136,10 +137,12 @@ function loadState() {
 }
 
 function normalizeSync(sync) {
+  const familyCode = normalizeFamilyCode(sync && sync.familyCode ? sync.familyCode : DEFAULT_FAMILY_CODE);
   return {
     ...defaultState.sync,
     ...(sync || {}),
-    familyCode: normalizeFamilyCode(sync && sync.familyCode ? sync.familyCode : ""),
+    enabled: true,
+    familyCode,
     deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : []
   };
 }
@@ -190,12 +193,12 @@ function isSyncEnabled() {
 }
 
 function getSyncLabel() {
-  if (!isSyncEnabled()) return "Lokal";
-  if (syncRuntime.status === "syncing") return "Synchronisiert...";
+  if (!isSyncEnabled()) return "Familie";
+  if (syncRuntime.status === "syncing") return "Wird synchronisiert";
   if (syncRuntime.status === "synced") return "Synchron";
-  if (syncRuntime.status === "offline") return "Offline";
+  if (syncRuntime.status === "offline") return "Offline bereit";
   if (syncRuntime.status === "error") return "Sync-Fehler";
-  return "Bereit";
+  return "Familie verbunden";
 }
 
 function getLastSyncText() {
@@ -373,38 +376,17 @@ function renderGameView() {
 }
 
 function renderSyncPanel() {
-  if (isSyncEnabled()) {
-    return `
-      <div class="sync-panel">
-        <div class="sync-row">
-          <span class="sync-dot ${syncRuntime.status}"></span>
-          <div>
-            <strong>${getSyncLabel()}</strong>
-            <p class="hint">${escapeHtml(syncRuntime.detail || getLastSyncText())}</p>
-          </div>
-        </div>
-        <div class="sync-code">${escapeHtml(state.sync.familyCode)}</div>
-        <div class="sync-actions">
-          <button class="secondary compact-button" data-action="sync-now" ${syncRunning ? "disabled" : ""}>Jetzt syncen</button>
-          <button class="ghost compact-button" data-action="disable-sync">Sync aus</button>
-        </div>
-      </div>
-    `;
-  }
-
   return `
     <div class="sync-panel">
       <div class="sync-row">
-        <span class="sync-dot local"></span>
+        <span class="sync-dot ${syncRuntime.status}"></span>
         <div>
-          <strong>Nur lokal</strong>
-          <p class="hint">Optional teilst du Spieler und fertige Spiele ueber einen Familien-Code.</p>
+          <strong>${getSyncLabel()}</strong>
+          <p class="hint">${escapeHtml(syncRuntime.detail || getLastSyncText())}</p>
         </div>
       </div>
-      <form class="sync-form" data-action="enable-sync-form">
-        <input class="text-input" name="familyCode" maxlength="36" autocomplete="off" autocapitalize="characters" placeholder="NOBSI-DART-8K4P" aria-label="Familien-Code">
-        <button class="primary" type="submit">Sync aktivieren</button>
-      </form>
+      <div class="sync-code">Familie ${escapeHtml(state.sync.familyCode)}</div>
+      <button class="secondary compact-button" data-action="sync-now" ${syncRunning ? "disabled" : ""}>Jetzt pruefen</button>
     </div>
   `;
 }
@@ -945,34 +927,12 @@ function mergeCounts(target, source) {
   });
 }
 
-async function enableFamilySync(code) {
-  const familyCode = normalizeFamilyCode(code);
-  if (!familyCode || familyCode.length < 4) {
-    state.message = "Bitte einen Familien-Code mit mindestens 4 Zeichen eingeben.";
-    saveAndRender();
-    return;
-  }
-
-  state.sync.enabled = true;
-  state.sync.familyCode = familyCode;
-  if (!Array.isArray(state.sync.deletedPlayerIds)) state.sync.deletedPlayerIds = [];
-  state.message = "";
-  saveAndRender();
-  await syncWithFirebase({ manual: true });
-}
-
-function disableFamilySync() {
-  if (!confirm("Sync auf diesem Geraet ausschalten? Lokale Daten bleiben erhalten.")) return;
-  state.sync.enabled = false;
-  state.sync.familyCode = "";
-  state.sync.lastSyncedAt = "";
-  state.sync.deletedPlayerIds = [];
-  setSyncRuntime("local", "Nur auf diesem Geraet", "", false);
-  saveAndRender();
-}
-
 function queueSync() {
   if (!isSyncEnabled()) return;
+  if (!navigator.onLine) {
+    setSyncRuntime("offline", "Offline. Neue Ergebnisse bleiben gespeichert und werden automatisch gesendet.");
+    return;
+  }
   window.clearTimeout(syncTimer);
   syncTimer = window.setTimeout(() => {
     syncWithFirebase({ manual: false });
@@ -981,6 +941,14 @@ function queueSync() {
 
 async function syncWithFirebase({ manual = false } = {}) {
   if (!isSyncEnabled() || syncRunning) return;
+  if (!navigator.onLine) {
+    const detail = "Offline. Neue Ergebnisse bleiben gespeichert und werden automatisch gesendet.";
+    setSyncRuntime("offline", detail, "", false);
+    if (manual) state.message = detail;
+    saveState();
+    renderMainOnly();
+    return;
+  }
   syncRunning = true;
   setSyncRuntime("syncing", "Spieler und fertige Spiele werden abgeglichen.");
 
@@ -998,13 +966,13 @@ async function syncWithFirebase({ manual = false } = {}) {
     await pushLocalData(familyRef);
 
     state.sync.lastSyncedAt = new Date().toISOString();
-    state.message = manual ? "Sync erledigt." : state.message;
+    state.message = manual ? "Alles ist aktuell." : state.message;
     setSyncRuntime("synced", getLastSyncText(), "", false);
     saveState();
   } catch (error) {
     const offline = !navigator.onLine || /network|offline|unavailable/i.test(String(error && error.message));
     const detail = offline
-      ? "Kein Internet. Die App speichert lokal und versucht es spaeter wieder."
+      ? "Offline. Neue Ergebnisse bleiben gespeichert und werden automatisch gesendet."
       : "Firebase ist noch nicht erreichbar. Pruefe Regeln und Internet.";
     setSyncRuntime(offline ? "offline" : "error", detail, error && error.message ? error.message : "", false);
     if (manual) state.message = detail;
@@ -1613,17 +1581,9 @@ document.addEventListener("click", (event) => {
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
   if (action === "sync-now") syncWithFirebase({ manual: true });
-  if (action === "disable-sync") disableFamilySync();
 });
 
 document.addEventListener("submit", (event) => {
-  const syncForm = event.target.closest("[data-action='enable-sync-form']");
-  if (syncForm) {
-    event.preventDefault();
-    enableFamilySync(new FormData(syncForm).get("familyCode"));
-    return;
-  }
-
   const playerForm = event.target.closest("[data-action='add-player-form']");
   if (playerForm) {
     event.preventDefault();
@@ -1663,8 +1623,17 @@ window.addEventListener("appinstalled", () => {
   render();
 });
 
+window.addEventListener("online", () => {
+  setSyncRuntime("syncing", "Internet ist wieder da. Daten werden abgeglichen.");
+  syncWithFirebase({ manual: false });
+});
+
+window.addEventListener("offline", () => {
+  setSyncRuntime("offline", "Offline. Neue Ergebnisse bleiben gespeichert und werden automatisch gesendet.");
+});
+
 render();
 if (isSyncEnabled()) {
-  setSyncRuntime("syncing", "Familien-Daten werden geladen.", "", false);
+  setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Familien-Daten werden geladen." : "Offline. Ergebnisse werden spaeter automatisch gesendet.", "", false);
   syncWithFirebase({ manual: false });
 }
