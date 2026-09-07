@@ -56,6 +56,10 @@ let avatarEditorPlayerId = null;
 let activeStatsPlayerId = null;
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
+let familyCodeEditorOpen = false;
+let updateReady = false;
+let updateWorker = null;
+let updateReloading = false;
 let firebaseApp = null;
 let firebaseAuth = null;
 let firebaseDb = null;
@@ -231,6 +235,7 @@ function render() {
         ${tabButton("stats", "Statistik")}
         ${tabButton("players", "Spieler")}
       </nav>
+      ${renderUpdateNotice()}
 
       <main class="main">
         ${renderMainContent()}
@@ -253,6 +258,7 @@ function renderOverlays() {
   return `
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
+    ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
   `;
 }
 
@@ -272,6 +278,19 @@ function renderInstallButton() {
     return `<span class="install-state">Installiert</span>`;
   }
   return `<button class="install-button" data-action="install-app">App installieren</button>`;
+}
+
+function renderUpdateNotice() {
+  if (!updateReady) return "";
+  return `
+    <div class="update-notice" role="status">
+      <div>
+        <strong>Update bereit</strong>
+        <p>Neue Version laden?</p>
+      </div>
+      <button class="primary compact-button" data-action="apply-update">Laden</button>
+    </div>
+  `;
 }
 
 function renderInstallHelp() {
@@ -386,7 +405,31 @@ function renderSyncPanel() {
         </div>
       </div>
       <div class="sync-code">Familie ${escapeHtml(state.sync.familyCode)}</div>
-      <button class="secondary compact-button" data-action="sync-now" ${syncRunning ? "disabled" : ""}>Jetzt pruefen</button>
+      <div class="sync-actions">
+        <button class="secondary compact-button" data-action="sync-now" ${syncRunning ? "disabled" : ""}>Jetzt pruefen</button>
+        <button class="ghost compact-button" data-action="open-family-code">Code aendern</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderFamilyCodeEditor() {
+  return `
+    <div class="modal-backdrop">
+      <section class="install-card" role="dialog" aria-modal="true" aria-label="Familien-Code aendern">
+        <div class="editor-head">
+          <div>
+            <h2>Familien-Code</h2>
+            <p class="hint">Alle Geraete mit demselben Code teilen Spieler und Statistiken.</p>
+          </div>
+          <button class="icon-button" data-action="close-family-code" aria-label="Schliessen">X</button>
+        </div>
+        <form class="sync-form" data-action="family-code-form">
+          <input class="text-input" name="familyCode" maxlength="36" autocomplete="off" autocapitalize="characters" value="${escapeHtml(state.sync.familyCode)}" aria-label="Familien-Code">
+          <button class="primary" type="submit">Code speichern</button>
+        </form>
+        <p class="footer-note">Aktuelle Daten bleiben auf diesem Handy und werden mit dem neuen Code abgeglichen.</p>
+      </section>
     </div>
   `;
 }
@@ -927,6 +970,42 @@ function mergeCounts(target, source) {
   });
 }
 
+function openFamilyCodeEditor() {
+  familyCodeEditorOpen = true;
+  render();
+}
+
+function closeFamilyCodeEditor() {
+  familyCodeEditorOpen = false;
+  render();
+}
+
+function changeFamilyCode(code) {
+  const familyCode = normalizeFamilyCode(code);
+  if (!familyCode || familyCode.length < 4) {
+    state.message = "Bitte einen Familien-Code mit mindestens 4 Zeichen eingeben.";
+    familyCodeEditorOpen = false;
+    saveAndRender();
+    return;
+  }
+
+  if (familyCode === state.sync.familyCode) {
+    familyCodeEditorOpen = false;
+    render();
+    return;
+  }
+
+  state.sync.enabled = true;
+  state.sync.familyCode = familyCode;
+  state.sync.lastSyncedAt = "";
+  state.sync.deletedPlayerIds = [];
+  state.message = "Familien-Code geaendert.";
+  familyCodeEditorOpen = false;
+  setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
+  saveAndRender();
+  queueSync();
+}
+
 function queueSync() {
   if (!isSyncEnabled()) return;
   if (!navigator.onLine) {
@@ -1457,6 +1536,20 @@ function closeInstallHelp() {
   render();
 }
 
+function showUpdateReady(worker) {
+  updateWorker = worker;
+  updateReady = true;
+  render();
+}
+
+function applyUpdate() {
+  if (!updateWorker) {
+    window.location.reload();
+    return;
+  }
+  updateWorker.postMessage({ type: "SKIP_WAITING" });
+}
+
 function addPlayer(name) {
   const clean = name.trim();
   if (!clean) return;
@@ -1581,9 +1674,19 @@ document.addEventListener("click", (event) => {
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
   if (action === "sync-now") syncWithFirebase({ manual: true });
+  if (action === "open-family-code") openFamilyCodeEditor();
+  if (action === "close-family-code") closeFamilyCodeEditor();
+  if (action === "apply-update") applyUpdate();
 });
 
 document.addEventListener("submit", (event) => {
+  const familyCodeForm = event.target.closest("[data-action='family-code-form']");
+  if (familyCodeForm) {
+    event.preventDefault();
+    changeFamilyCode(new FormData(familyCodeForm).get("familyCode"));
+    return;
+  }
+
   const playerForm = event.target.closest("[data-action='add-player-form']");
   if (playerForm) {
     event.preventDefault();
@@ -1605,9 +1708,34 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-if ("serviceWorker" in navigator) {
+if ("serviceWorker" in navigator && navigator.serviceWorker) {
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (updateReloading) return;
+    updateReloading = true;
+    window.location.reload();
+  });
+
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+    navigator.serviceWorker.register("./sw.js").then((registration) => {
+      watchServiceWorker(registration);
+      registration.update().catch(() => {});
+    }).catch(() => {});
+  });
+}
+
+function watchServiceWorker(registration) {
+  if (registration.waiting && navigator.serviceWorker.controller) {
+    showUpdateReady(registration.waiting);
+  }
+
+  registration.addEventListener("updatefound", () => {
+    const worker = registration.installing;
+    if (!worker) return;
+    worker.addEventListener("statechange", () => {
+      if (worker.state === "installed" && navigator.serviceWorker.controller) {
+        showUpdateReady(worker);
+      }
+    });
   });
 }
 
