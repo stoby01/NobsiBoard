@@ -1502,6 +1502,70 @@ button:disabled {
   font-size: 0.88rem;
 }
 
+.sync-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.sync-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.sync-dot {
+  width: 14px;
+  height: 14px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #94a3b8;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.14);
+}
+
+.sync-dot.synced {
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.14);
+}
+
+.sync-dot.syncing {
+  background: var(--gold);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+}
+
+.sync-dot.error,
+.sync-dot.offline {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px rgba(185, 28, 28, 0.14);
+}
+
+.sync-code {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #e2e8f0;
+  color: var(--ink);
+  font-weight: 950;
+  overflow-wrap: anywhere;
+}
+
+.sync-form,
+.sync-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.sync-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 @media (max-width: 760px) {
   .shell {
     padding-left: 10px;
@@ -1563,6 +1627,10 @@ button:disabled {
   }
 
   .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .sync-actions {
     grid-template-columns: 1fr;
   }
 

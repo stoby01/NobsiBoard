@@ -1,5 +1,14 @@
 const STORAGE_KEY = "dartabend.local.v1";
 
+const firebaseConfig = {
+  apiKey: "AIzaSyAXzYL6c9-XyN_zv7K8VTyAfclxSx4Ta4Y",
+  authDomain: "nobsiboard.firebaseapp.com",
+  projectId: "nobsiboard",
+  storageBucket: "nobsiboard.firebasestorage.app",
+  messagingSenderId: "71935410937",
+  appId: "1:71935410937:web:523dc03a75ecbc89cbd828"
+};
+
 const colors = ["#0f766e", "#dc2626", "#2563eb", "#ca8a04", "#7c3aed", "#16a34a"];
 const dartNumbers = Array.from({ length: 20 }, (_, index) => index + 1);
 const avatarOptions = {
@@ -30,6 +39,12 @@ const defaultState = {
     checkout: "straight",
     selectedPlayerIds: []
   },
+  sync: {
+    enabled: false,
+    familyCode: "",
+    lastSyncedAt: "",
+    deletedPlayerIds: []
+  },
   activeGame: null,
   message: ""
 };
@@ -40,6 +55,17 @@ let avatarEditorPlayerId = null;
 let activeStatsPlayerId = null;
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
+let firebaseApp = null;
+let firebaseAuth = null;
+let firebaseDb = null;
+let firebasePersistenceTried = false;
+let syncTimer = null;
+let syncRunning = false;
+let syncRuntime = {
+  status: "local",
+  detail: "Nur auf diesem Geraet",
+  error: ""
+};
 
 if (state.setup.selectedPlayerIds.length === 0) {
   state.setup.selectedPlayerIds = state.players.slice(0, 2).map((player) => player.id);
@@ -49,12 +75,14 @@ if (state.setup.selectedPlayerIds.length === 0) {
 const app = document.querySelector("#app");
 
 function createPlayer(name, color) {
+  const now = new Date().toISOString();
   return {
     id: createId(),
     name,
     color,
     avatar: createDefaultAvatar(color),
-    createdAt: new Date().toISOString()
+    createdAt: now,
+    updatedAt: now
   };
 }
 
@@ -96,6 +124,7 @@ function loadState() {
       ...clone(defaultState),
       ...parsed,
       setup: { ...defaultState.setup, ...(parsed.setup || {}) },
+      sync: normalizeSync(parsed.sync),
       players: normalizePlayers(parsed.players && parsed.players.length ? parsed.players : clone(defaultState.players)),
       matches: parsed.matches || [],
       activeGame: parsed.activeGame || null,
@@ -106,10 +135,24 @@ function loadState() {
   }
 }
 
+function normalizeSync(sync) {
+  return {
+    ...defaultState.sync,
+    ...(sync || {}),
+    familyCode: normalizeFamilyCode(sync && sync.familyCode ? sync.familyCode : ""),
+    deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : []
+  };
+}
+
 function normalizePlayers(players) {
   return players.map((player, index) => ({
     ...player,
-    avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length])
+    id: player.id || createId(),
+    name: String(player.name || "Spieler").slice(0, 18),
+    color: player.color || colors[index % colors.length],
+    avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length]),
+    createdAt: player.createdAt || new Date().toISOString(),
+    updatedAt: player.updatedAt || player.createdAt || new Date().toISOString()
   }));
 }
 
@@ -131,6 +174,38 @@ function saveState() {
   } catch {
     state.message = "Speicher ist voll. Bitte alte Browserdaten pruefen.";
   }
+}
+
+function normalizeFamilyCode(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^A-Z0-9_-]/g, "")
+    .slice(0, 36);
+}
+
+function isSyncEnabled() {
+  return Boolean(state.sync && state.sync.enabled && state.sync.familyCode);
+}
+
+function getSyncLabel() {
+  if (!isSyncEnabled()) return "Lokal";
+  if (syncRuntime.status === "syncing") return "Synchronisiert...";
+  if (syncRuntime.status === "synced") return "Synchron";
+  if (syncRuntime.status === "offline") return "Offline";
+  if (syncRuntime.status === "error") return "Sync-Fehler";
+  return "Bereit";
+}
+
+function getLastSyncText() {
+  if (!state.sync.lastSyncedAt) return "Noch nicht synchronisiert.";
+  return `Zuletzt: ${new Date(state.sync.lastSyncedAt).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function setSyncRuntime(status, detail, error = "", shouldRender = true) {
+  syncRuntime = { status, detail, error };
+  if (shouldRender && app && app.innerHTML) renderMainOnly();
 }
 
 function render() {
@@ -291,9 +366,46 @@ function renderGameView() {
           <h2>Schnellstart</h2>
         </div>
         <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. Gespeichert werden spaeter nur die festen Spieler.</p>
-        <div class="footer-note">Alle Daten bleiben nur auf diesem Geraet.</div>
+        ${renderSyncPanel()}
       </aside>
     </section>
+  `;
+}
+
+function renderSyncPanel() {
+  if (isSyncEnabled()) {
+    return `
+      <div class="sync-panel">
+        <div class="sync-row">
+          <span class="sync-dot ${syncRuntime.status}"></span>
+          <div>
+            <strong>${getSyncLabel()}</strong>
+            <p class="hint">${escapeHtml(syncRuntime.detail || getLastSyncText())}</p>
+          </div>
+        </div>
+        <div class="sync-code">${escapeHtml(state.sync.familyCode)}</div>
+        <div class="sync-actions">
+          <button class="secondary compact-button" data-action="sync-now" ${syncRunning ? "disabled" : ""}>Jetzt syncen</button>
+          <button class="ghost compact-button" data-action="disable-sync">Sync aus</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="sync-panel">
+      <div class="sync-row">
+        <span class="sync-dot local"></span>
+        <div>
+          <strong>Nur lokal</strong>
+          <p class="hint">Optional teilst du Spieler und fertige Spiele ueber einen Familien-Code.</p>
+        </div>
+      </div>
+      <form class="sync-form" data-action="enable-sync-form">
+        <input class="text-input" name="familyCode" maxlength="36" autocomplete="off" autocapitalize="characters" placeholder="NOBSI-DART-8K4P" aria-label="Familien-Code">
+        <button class="primary" type="submit">Sync aktivieren</button>
+      </form>
+    </div>
   `;
 }
 
@@ -833,6 +945,321 @@ function mergeCounts(target, source) {
   });
 }
 
+async function enableFamilySync(code) {
+  const familyCode = normalizeFamilyCode(code);
+  if (!familyCode || familyCode.length < 4) {
+    state.message = "Bitte einen Familien-Code mit mindestens 4 Zeichen eingeben.";
+    saveAndRender();
+    return;
+  }
+
+  state.sync.enabled = true;
+  state.sync.familyCode = familyCode;
+  if (!Array.isArray(state.sync.deletedPlayerIds)) state.sync.deletedPlayerIds = [];
+  state.message = "";
+  saveAndRender();
+  await syncWithFirebase({ manual: true });
+}
+
+function disableFamilySync() {
+  if (!confirm("Sync auf diesem Geraet ausschalten? Lokale Daten bleiben erhalten.")) return;
+  state.sync.enabled = false;
+  state.sync.familyCode = "";
+  state.sync.lastSyncedAt = "";
+  state.sync.deletedPlayerIds = [];
+  setSyncRuntime("local", "Nur auf diesem Geraet", "", false);
+  saveAndRender();
+}
+
+function queueSync() {
+  if (!isSyncEnabled()) return;
+  window.clearTimeout(syncTimer);
+  syncTimer = window.setTimeout(() => {
+    syncWithFirebase({ manual: false });
+  }, 700);
+}
+
+async function syncWithFirebase({ manual = false } = {}) {
+  if (!isSyncEnabled() || syncRunning) return;
+  syncRunning = true;
+  setSyncRuntime("syncing", "Spieler und fertige Spiele werden abgeglichen.");
+
+  try {
+    const db = await ensureFirebaseSession();
+    const familyRef = db.collection("families").doc(state.sync.familyCode);
+    await familyRef.set({
+      code: state.sync.familyCode,
+      app: "NobsiBoard",
+      updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await deleteQueuedRemotePlayers(familyRef);
+    await pullRemoteData(familyRef);
+    await pushLocalData(familyRef);
+
+    state.sync.lastSyncedAt = new Date().toISOString();
+    state.message = manual ? "Sync erledigt." : state.message;
+    setSyncRuntime("synced", getLastSyncText(), "", false);
+    saveState();
+  } catch (error) {
+    const offline = !navigator.onLine || /network|offline|unavailable/i.test(String(error && error.message));
+    const detail = offline
+      ? "Kein Internet. Die App speichert lokal und versucht es spaeter wieder."
+      : "Firebase ist noch nicht erreichbar. Pruefe Regeln und Internet.";
+    setSyncRuntime(offline ? "offline" : "error", detail, error && error.message ? error.message : "", false);
+    if (manual) state.message = detail;
+    saveState();
+  } finally {
+    syncRunning = false;
+    renderMainOnly();
+  }
+}
+
+async function ensureFirebaseSession() {
+  if (!window.firebase || !window.firebase.initializeApp || !window.firebase.firestore || !window.firebase.auth) {
+    throw new Error("Firebase SDK wurde nicht geladen.");
+  }
+
+  if (!firebaseApp) {
+    firebaseApp = window.firebase.apps && window.firebase.apps.length
+      ? window.firebase.app()
+      : window.firebase.initializeApp(firebaseConfig);
+    firebaseDb = window.firebase.firestore();
+    if (!firebasePersistenceTried) {
+      firebasePersistenceTried = true;
+      await firebaseDb.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+    }
+    firebaseAuth = window.firebase.auth();
+  }
+
+  if (!firebaseAuth.currentUser) {
+    await firebaseAuth.signInAnonymously();
+  }
+
+  return firebaseDb;
+}
+
+async function pullRemoteData(familyRef) {
+  const [playerSnapshot, matchSnapshot] = await Promise.all([
+    familyRef.collection("players").get(),
+    familyRef.collection("matches").get()
+  ]);
+
+  const deletedPlayerIds = playerSnapshot.docs
+    .filter((doc) => doc.data() && doc.data().deleted === true)
+    .map((doc) => doc.id);
+  removeDeletedPlayers(deletedPlayerIds);
+
+  const pendingDeletes = new Set(state.sync.deletedPlayerIds || []);
+  const remotePlayers = playerSnapshot.docs
+    .filter((doc) => !(doc.data() && doc.data().deleted === true) && !pendingDeletes.has(doc.id))
+    .map((doc) => normalizeRemotePlayer(doc.id, doc.data()))
+    .filter(Boolean);
+  const remoteMatches = matchSnapshot.docs
+    .map((doc) => normalizeRemoteMatch(doc.id, doc.data()))
+    .filter(Boolean);
+
+  mergeRemotePlayers(remotePlayers);
+  mergeRemoteMatches(remoteMatches);
+  ensureSelectedPlayers();
+  saveState();
+}
+
+function removeDeletedPlayers(ids) {
+  const deletedIds = new Set(ids || []);
+  if (!deletedIds.size) return;
+  state.players = state.players.filter((player) => !deletedIds.has(player.id));
+  state.setup.selectedPlayerIds = state.setup.selectedPlayerIds.filter((id) => !deletedIds.has(id));
+  if (state.activeGame) {
+    state.activeGame.players = state.activeGame.players.filter((player) => !deletedIds.has(player.id));
+  }
+}
+
+function mergeRemotePlayers(remotePlayers) {
+  if (!remotePlayers.length) return;
+
+  if (isFreshDefaultLocalState()) {
+    state.players = normalizePlayers(remotePlayers);
+    return;
+  }
+
+  const byId = new Map(normalizePlayers(state.players).map((player) => [player.id, player]));
+
+  remotePlayers.forEach((remotePlayer) => {
+    const matchingLocal = byId.get(remotePlayer.id) || findPlayerByName([...byId.values()], remotePlayer.name, remotePlayer.id);
+    if (!matchingLocal) {
+      byId.set(remotePlayer.id, remotePlayer);
+      return;
+    }
+
+    if (matchingLocal.id !== remotePlayer.id) {
+      migratePlayerId(matchingLocal.id, remotePlayer.id);
+      byId.delete(matchingLocal.id);
+    }
+
+    byId.set(remotePlayer.id, chooseLatestPlayer({ ...matchingLocal, id: remotePlayer.id }, remotePlayer));
+  });
+
+  state.players = [...byId.values()].sort(compareCreatedAt);
+}
+
+function mergeRemoteMatches(remoteMatches) {
+  const byId = new Map((state.matches || []).map((match) => [match.id, normalizeLocalMatch(match)]));
+  remoteMatches.forEach((remoteMatch) => {
+    const localMatch = byId.get(remoteMatch.id);
+    if (!localMatch || getTime(remoteMatch.finishedAt || remoteMatch.createdAt) > getTime(localMatch.finishedAt || localMatch.createdAt)) {
+      byId.set(remoteMatch.id, remoteMatch);
+    }
+  });
+  state.matches = [...byId.values()].sort((a, b) => getTime(a.finishedAt || a.createdAt) - getTime(b.finishedAt || b.createdAt));
+}
+
+function findPlayerByName(players, name, excludeId) {
+  const key = playerNameKey(name);
+  return players.find((player) => player.id !== excludeId && playerNameKey(player.name) === key);
+}
+
+function playerNameKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function chooseLatestPlayer(localPlayer, remotePlayer) {
+  const localTime = getTime(localPlayer.updatedAt || localPlayer.createdAt);
+  const remoteTime = getTime(remotePlayer.updatedAt || remotePlayer.createdAt);
+  return remoteTime > localTime ? remotePlayer : localPlayer;
+}
+
+function migratePlayerId(fromId, toId) {
+  state.setup.selectedPlayerIds = state.setup.selectedPlayerIds.map((id) => id === fromId ? toId : id);
+  if (state.activeGame) {
+    state.activeGame.players.forEach((player) => {
+      if (player.id === fromId) player.id = toId;
+    });
+    if (state.activeGame.winnerId === fromId) state.activeGame.winnerId = toId;
+  }
+  (state.matches || []).forEach((match) => {
+    if (match.winnerId === fromId) match.winnerId = toId;
+    (match.players || []).forEach((player) => {
+      if (player.id === fromId) player.id = toId;
+    });
+  });
+}
+
+function isFreshDefaultLocalState() {
+  if (state.sync.lastSyncedAt || (state.matches && state.matches.length) || state.activeGame) return false;
+  if (!state.players || state.players.length !== 2) return false;
+  return state.players.some((player) => playerNameKey(player.name) === "papa")
+    && state.players.some((player) => playerNameKey(player.name) === "piet");
+}
+
+function ensureSelectedPlayers() {
+  const existingIds = new Set(state.players.map((player) => player.id));
+  state.setup.selectedPlayerIds = state.setup.selectedPlayerIds.filter((id) => existingIds.has(id));
+  state.players.forEach((player) => {
+    if (state.setup.selectedPlayerIds.length < 2 && !state.setup.selectedPlayerIds.includes(player.id)) {
+      state.setup.selectedPlayerIds.push(player.id);
+    }
+  });
+}
+
+async function deleteQueuedRemotePlayers(familyRef) {
+  const deletedIds = [...new Set(state.sync.deletedPlayerIds || [])];
+  if (!deletedIds.length) return;
+  const deletedAt = new Date().toISOString();
+  await Promise.all(deletedIds.map((id) => familyRef.collection("players").doc(id).set({
+    deleted: true,
+    deletedAt,
+    updatedAt: deletedAt
+  }, { merge: true })));
+  state.sync.deletedPlayerIds = [];
+}
+
+async function pushLocalData(familyRef) {
+  const playerWrites = normalizePlayers(state.players).map((player) => (
+    familyRef.collection("players").doc(player.id).set(preparePlayerForRemote(player), { merge: true })
+  ));
+  const matchWrites = (state.matches || []).map((match) => {
+    const normalized = normalizeLocalMatch(match);
+    return familyRef.collection("matches").doc(normalized.id).set(prepareMatchForRemote(normalized), { merge: true });
+  });
+  await Promise.all([...playerWrites, ...matchWrites]);
+}
+
+function normalizeRemotePlayer(id, data) {
+  if (!data) return null;
+  return normalizePlayers([{
+    id,
+    name: data.name,
+    color: data.color,
+    avatar: data.avatar,
+    createdAt: data.createdAt,
+    updatedAt: data.updatedAt
+  }])[0];
+}
+
+function normalizeLocalMatch(match) {
+  return normalizeRemoteMatch(match.id, match);
+}
+
+function normalizeRemoteMatch(id, data) {
+  if (!data || !id || !Array.isArray(data.players)) return null;
+  return {
+    id,
+    startScore: Number(data.startScore || 501),
+    createdAt: data.createdAt || data.finishedAt || new Date().toISOString(),
+    finishedAt: data.finishedAt || data.createdAt || new Date().toISOString(),
+    checkout: data.checkout === "double" ? "double" : "straight",
+    winnerId: data.winnerId || "",
+    players: data.players.map((player, index) => ({
+      id: player.id || `unknown-${index}`,
+      name: String(player.name || "Spieler").slice(0, 24),
+      color: player.color || colors[index % colors.length],
+      avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length]),
+      guest: Boolean(player.guest),
+      remaining: Number(player.remaining || 0),
+      rounds: Number(player.rounds || 0),
+      throwsTotal: Number(player.throwsTotal || 0),
+      highestThrow: Number(player.highestThrow || 0),
+      totalDarts: Number(player.totalDarts || 0),
+      dartCounts: player.dartCounts || {},
+      typeCounts: { ...createTypeCounts(), ...(player.typeCounts || {}) },
+      roundScores: Array.isArray(player.roundScores) ? player.roundScores.map(Number) : []
+    }))
+  };
+}
+
+function preparePlayerForRemote(player) {
+  return {
+    name: String(player.name || "Spieler").slice(0, 18),
+    color: player.color || colors[0],
+    avatar: normalizeAvatar(player.avatar, player.color || colors[0]),
+    deleted: false,
+    createdAt: player.createdAt || new Date().toISOString(),
+    updatedAt: player.updatedAt || new Date().toISOString()
+  };
+}
+
+function prepareMatchForRemote(match) {
+  return {
+    id: match.id,
+    startScore: match.startScore,
+    createdAt: match.createdAt,
+    finishedAt: match.finishedAt,
+    checkout: match.checkout,
+    winnerId: match.winnerId,
+    players: match.players
+  };
+}
+
+function compareCreatedAt(a, b) {
+  return getTime(a.createdAt) - getTime(b.createdAt);
+}
+
+function getTime(value) {
+  const time = new Date(value || 0).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
 function startGame() {
   const playerCount = state.setup.selectedPlayerIds.length + guestPlayers.length;
   if (playerCount < 2) return;
@@ -877,6 +1304,7 @@ function startGame() {
 function submitRound() {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
+  let finishedMatch = false;
   const throws = game.currentThrows || [];
   if (throws.length === 0) {
     state.message = "Bitte erst mindestens einen Dart auswaehlen.";
@@ -928,11 +1356,13 @@ function submitRound() {
       players: game.players.map((snapshot) => ({ ...snapshot }))
     });
     state.message = "";
+    finishedMatch = true;
   } else {
     game.currentIndex = (game.currentIndex + 1) % game.players.length;
   }
 
   saveAndRenderMain();
+  if (finishedMatch) queueSync();
 }
 
 function undo() {
@@ -1037,7 +1467,9 @@ function setAvatarPart(field, value) {
   player.avatar = normalizeAvatar(player.avatar, player.color);
   player.avatar[field] = value;
   if (field === "shirt") player.color = value;
+  player.updatedAt = new Date().toISOString();
   saveAndRender();
+  queueSync();
 }
 
 async function installApp() {
@@ -1065,6 +1497,7 @@ function addPlayer(name) {
   state.players.push(player);
   if (state.setup.selectedPlayerIds.length < 2) state.setup.selectedPlayerIds.push(player.id);
   saveAndRender();
+  queueSync();
 }
 
 function renamePlayer(id) {
@@ -1073,12 +1506,14 @@ function renamePlayer(id) {
   const next = prompt("Neuer Name:", player.name);
   if (!next || !next.trim()) return;
   player.name = next.trim().slice(0, 18);
+  player.updatedAt = new Date().toISOString();
   if (state.activeGame) {
     state.activeGame.players.forEach((snapshot) => {
       if (snapshot.id === id) snapshot.name = player.name;
     });
   }
   saveAndRender();
+  queueSync();
 }
 
 function deletePlayer(id) {
@@ -1093,7 +1528,9 @@ function deletePlayer(id) {
   if (!confirm(`${player.name} wirklich loeschen? Alte Spiele bleiben in der Historie.`)) return;
   state.players = state.players.filter((item) => item.id !== id);
   state.setup.selectedPlayerIds = state.setup.selectedPlayerIds.filter((playerId) => playerId !== id);
+  if (isSyncEnabled()) state.sync.deletedPlayerIds = [...new Set([...(state.sync.deletedPlayerIds || []), id])];
   saveAndRender();
+  queueSync();
 }
 
 function cancelGame() {
@@ -1175,9 +1612,18 @@ document.addEventListener("click", (event) => {
   if (action === "close-install-help") closeInstallHelp();
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
+  if (action === "sync-now") syncWithFirebase({ manual: true });
+  if (action === "disable-sync") disableFamilySync();
 });
 
 document.addEventListener("submit", (event) => {
+  const syncForm = event.target.closest("[data-action='enable-sync-form']");
+  if (syncForm) {
+    event.preventDefault();
+    enableFamilySync(new FormData(syncForm).get("familyCode"));
+    return;
+  }
+
   const playerForm = event.target.closest("[data-action='add-player-form']");
   if (playerForm) {
     event.preventDefault();
@@ -1218,3 +1664,7 @@ window.addEventListener("appinstalled", () => {
 });
 
 render();
+if (isSyncEnabled()) {
+  setSyncRuntime("syncing", "Familien-Daten werden geladen.", "", false);
+  syncWithFirebase({ manual: false });
+}
