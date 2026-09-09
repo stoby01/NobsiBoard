@@ -1595,6 +1595,25 @@ button:disabled {
   width: 100%;
 }
 
+.admin-reset {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.admin-reset summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-reset button {
+  width: 100%;
+  margin-top: 10px;
+}
+
 @media (max-width: 760px) {
   .shell {
     padding-left: 10px;

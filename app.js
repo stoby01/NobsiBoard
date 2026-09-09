@@ -130,7 +130,7 @@ function loadState() {
       ...parsed,
       setup: { ...defaultState.setup, ...(parsed.setup || {}) },
       sync: normalizeSync(parsed.sync),
-      players: normalizePlayers(parsed.players && parsed.players.length ? parsed.players : clone(defaultState.players)),
+      players: Array.isArray(parsed.players) ? normalizePlayers(parsed.players) : normalizePlayers(clone(defaultState.players)),
       matches: parsed.matches || [],
       activeGame: parsed.activeGame || null,
       message: parsed.message || ""
@@ -429,6 +429,10 @@ function renderFamilyCodeEditor() {
           <button class="primary" type="submit">Code speichern</button>
         </form>
         <p class="footer-note">Aktuelle Daten bleiben auf diesem Handy und werden mit dem neuen Code abgeglichen.</p>
+        <details class="admin-reset">
+          <summary>Admin</summary>
+          <button class="danger compact-button" data-action="reset-family-tree">Familie komplett zuruecksetzen</button>
+        </details>
       </section>
     </div>
   `;
@@ -1004,6 +1008,91 @@ function changeFamilyCode(code) {
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
   saveAndRender();
   queueSync();
+}
+
+async function resetFamilyTree() {
+  const familyCode = state.sync.familyCode;
+  const firstOk = confirm(`Familie ${familyCode} wirklich komplett zuruecksetzen? Spieler, Spiele und Statistiken werden geloescht.`);
+  if (!firstOk) return;
+
+  const typed = prompt("Zum Bestaetigen RESET eingeben:");
+  if (typed !== "RESET") {
+    state.message = "Reset abgebrochen.";
+    familyCodeEditorOpen = false;
+    saveAndRender();
+    return;
+  }
+
+  if (!navigator.onLine) {
+    state.message = "Reset braucht Internet, damit Firebase wirklich geleert wird.";
+    familyCodeEditorOpen = false;
+    setSyncRuntime("offline", "Offline. Reset wurde nicht ausgefuehrt.", "", false);
+    saveAndRender();
+    return;
+  }
+
+  syncRunning = true;
+  familyCodeEditorOpen = false;
+  setSyncRuntime("syncing", "Familie wird geleert.");
+  render();
+
+  try {
+    const db = await ensureFirebaseSession();
+    const familyRef = db.collection("families").doc(familyCode);
+    await clearFamilyCollection(familyRef, "players");
+    await clearFamilyCollection(familyRef, "matches");
+    await familyRef.set({
+      code: familyCode,
+      app: "NobsiBoard",
+      resetAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    resetLocalFamilyState(familyCode);
+    setSyncRuntime("synced", "Familie ist frisch und leer.", "", false);
+    saveState();
+  } catch (error) {
+    state.message = "Reset konnte Firebase nicht leeren. Bitte Internet und Regeln pruefen.";
+    setSyncRuntime("error", "Reset nicht abgeschlossen.", error && error.message ? error.message : "", false);
+    saveState();
+  } finally {
+    syncRunning = false;
+    render();
+  }
+}
+
+async function clearFamilyCollection(familyRef, collectionName) {
+  const snapshot = await familyRef.collection(collectionName).get();
+  const docs = snapshot.docs;
+  for (let index = 0; index < docs.length; index += 400) {
+    const batch = firebaseDb.batch();
+    docs.slice(index, index + 400).forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
+}
+
+function resetLocalFamilyState(familyCode) {
+  state = {
+    ...clone(defaultState),
+    players: [],
+    matches: [],
+    setup: {
+      startScore: 501,
+      checkout: "straight",
+      selectedPlayerIds: []
+    },
+    sync: {
+      enabled: true,
+      familyCode,
+      lastSyncedAt: new Date().toISOString(),
+      deletedPlayerIds: []
+    },
+    activeGame: null,
+    message: "Familie wurde komplett zurueckgesetzt."
+  };
+  guestPlayers = [];
+  avatarEditorPlayerId = null;
+  activeStatsPlayerId = null;
 }
 
 function queueSync() {
@@ -1677,6 +1766,7 @@ document.addEventListener("click", (event) => {
   if (action === "open-family-code") openFamilyCodeEditor();
   if (action === "close-family-code") closeFamilyCodeEditor();
   if (action === "apply-update") applyUpdate();
+  if (action === "reset-family-tree") resetFamilyTree();
 });
 
 document.addEventListener("submit", (event) => {
