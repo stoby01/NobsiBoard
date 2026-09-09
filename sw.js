@@ -1,4 +1,4 @@
-const CACHE_NAME = "nobsiboard-v24";
+const CACHE_NAME = "nobsiboard-v26";
 const ASSETS = [
   "./",
   "./index.html",
@@ -31,6 +31,6 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") {
-    self.skipWaiting();
+    event.waitUntil(self.skipWaiting());
   }
 });

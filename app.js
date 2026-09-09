@@ -61,12 +61,16 @@ let installHelpOpen = false;
 let familyCodeEditorOpen = false;
 let welcomeOpen = !state.welcomeSeen;
 let updateReady = false;
+let updateApplying = false;
 let updateWorker = null;
 let updateReloading = false;
+let serviceWorkerRegistration = null;
 let firebaseApp = null;
 let firebaseAuth = null;
 let firebaseDb = null;
 let firebasePersistenceTried = false;
+let familyResetUnsubscribe = null;
+let familyResetListenCode = "";
 let syncTimer = null;
 let syncRunning = false;
 let syncRuntime = {
@@ -298,10 +302,10 @@ function renderUpdateNotice() {
   return `
     <div class="update-notice" role="status">
       <div>
-        <strong>Update bereit</strong>
-        <p>Neue Version laden?</p>
+        <strong>${updateApplying ? "Update wird geladen" : "Update bereit"}</strong>
+        <p>${updateApplying ? "NobsiBoard startet gleich neu." : "Neue Version laden?"}</p>
       </div>
-      <button class="primary compact-button" data-action="apply-update">Laden</button>
+      <button class="primary compact-button" data-action="apply-update" ${updateApplying ? "disabled" : ""}>${updateApplying ? "Laedt" : "Laden"}</button>
     </div>
   `;
 }
@@ -1034,6 +1038,7 @@ function changeFamilyCode(code) {
   state.sync.lastSyncedAt = "";
   state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
+  stopFamilyResetWatcher();
   state.message = "Familien-Code geaendert.";
   familyCodeEditorOpen = false;
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
@@ -1149,6 +1154,7 @@ async function syncWithFirebase({ manual = false } = {}) {
   try {
     const db = await ensureFirebaseSession();
     const familyRef = db.collection("families").doc(state.sync.familyCode);
+    watchFamilyReset(familyRef);
     await familyRef.set({
       code: state.sync.familyCode,
       app: "NobsiBoard",
@@ -1200,6 +1206,37 @@ async function ensureFirebaseSession() {
   }
 
   return firebaseDb;
+}
+
+function stopFamilyResetWatcher() {
+  if (typeof familyResetUnsubscribe === "function") {
+    familyResetUnsubscribe();
+  }
+  familyResetUnsubscribe = null;
+  familyResetListenCode = "";
+}
+
+function watchFamilyReset(familyRef) {
+  if (!familyRef || typeof familyRef.onSnapshot !== "function" || familyResetListenCode === state.sync.familyCode) return;
+  stopFamilyResetWatcher();
+  familyResetListenCode = state.sync.familyCode;
+  familyResetUnsubscribe = familyRef.onSnapshot((snapshot) => {
+    if (!snapshot.exists) return;
+    const remoteResetAt = normalizeDateValue((snapshot.data() || {}).resetAt);
+    if (!remoteResetAt || getTime(remoteResetAt) <= getTime(state.sync.lastResetAt)) return;
+
+    resetLocalFamilyState(
+      state.sync.familyCode,
+      remoteResetAt,
+      "Familie wurde auf einem anderen Geraet zurueckgesetzt."
+    );
+    setSyncRuntime("synced", "Familie wurde frisch geladen.", "", false);
+    saveState();
+    render();
+  }, () => {
+    familyResetUnsubscribe = null;
+    familyResetListenCode = "";
+  });
 }
 
 async function applyRemoteFamilyReset(familyRef) {
@@ -1677,15 +1714,30 @@ function closeWelcome() {
 function showUpdateReady(worker) {
   updateWorker = worker;
   updateReady = true;
+  updateApplying = false;
   render();
 }
 
-function applyUpdate() {
-  if (!updateWorker) {
-    window.location.reload();
-    return;
+async function applyUpdate() {
+  updateApplying = true;
+  updateReady = true;
+  render();
+
+  try {
+    const registration = serviceWorkerRegistration || await navigator.serviceWorker.getRegistration();
+    const worker = (registration && registration.waiting) || updateWorker;
+    if (worker) {
+      worker.postMessage({ type: "SKIP_WAITING" });
+      window.setTimeout(() => {
+        if (!updateReloading) window.location.reload();
+      }, 1800);
+      return;
+    }
+  } catch {
+    // Reload below is the fallback for browsers that do not expose the waiting worker cleanly.
   }
-  updateWorker.postMessage({ type: "SKIP_WAITING" });
+
+  window.location.reload();
 }
 
 function addPlayer(name) {
@@ -1857,13 +1909,25 @@ if ("serviceWorker" in navigator && navigator.serviceWorker) {
 
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./sw.js").then((registration) => {
+      serviceWorkerRegistration = registration;
       watchServiceWorker(registration);
       registration.update().catch(() => {});
     }).catch(() => {});
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && serviceWorkerRegistration) {
+      serviceWorkerRegistration.update().catch(() => {});
+    }
+  });
+
+  window.setInterval(() => {
+    if (serviceWorkerRegistration) serviceWorkerRegistration.update().catch(() => {});
+  }, 30 * 60 * 1000);
 }
 
 function watchServiceWorker(registration) {
+  serviceWorkerRegistration = registration;
   if (registration.waiting && navigator.serviceWorker.controller) {
     showUpdateReady(registration.waiting);
   }
