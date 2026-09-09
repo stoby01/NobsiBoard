@@ -47,6 +47,7 @@ const defaultState = {
     deletedPlayerIds: []
   },
   activeGame: null,
+  welcomeSeen: false,
   message: ""
 };
 
@@ -57,6 +58,7 @@ let activeStatsPlayerId = null;
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
 let familyCodeEditorOpen = false;
+let welcomeOpen = !state.welcomeSeen;
 let updateReady = false;
 let updateWorker = null;
 let updateReloading = false;
@@ -256,6 +258,7 @@ function renderMainContent() {
 
 function renderOverlays() {
   return `
+    ${welcomeOpen ? renderWelcomePopup() : ""}
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
@@ -289,6 +292,23 @@ function renderUpdateNotice() {
         <p>Neue Version laden?</p>
       </div>
       <button class="primary compact-button" data-action="apply-update">Laden</button>
+    </div>
+  `;
+}
+
+function renderWelcomePopup() {
+  return `
+    <div class="modal-backdrop">
+      <section class="install-card welcome-card" role="dialog" aria-modal="true" aria-label="Willkommen">
+        <div class="welcome-mark">
+          <img src="./logo-512.png" alt="">
+        </div>
+        <div>
+          <h2>Willkommen zu NobsiBoard</h2>
+          <p class="welcome-copy">Eine waschechte Stobbez Entwicklung. Viel Spass beim Darten!</p>
+        </div>
+        <button class="primary" data-action="close-welcome">Los geht's</button>
+      </section>
     </div>
   `;
 }
@@ -1625,6 +1645,12 @@ function closeInstallHelp() {
   render();
 }
 
+function closeWelcome() {
+  welcomeOpen = false;
+  state.welcomeSeen = true;
+  saveAndRender();
+}
+
 function showUpdateReady(worker) {
   updateWorker = worker;
   updateReady = true;
@@ -1760,6 +1786,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "install-app") installApp();
   if (action === "close-install-help") closeInstallHelp();
+  if (action === "close-welcome") closeWelcome();
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
   if (action === "sync-now") syncWithFirebase({ manual: true });
