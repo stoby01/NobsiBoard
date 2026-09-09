@@ -44,6 +44,7 @@ const defaultState = {
     enabled: true,
     familyCode: DEFAULT_FAMILY_CODE,
     lastSyncedAt: "",
+    lastResetAt: "",
     deletedPlayerIds: []
   },
   activeGame: null,
@@ -149,6 +150,7 @@ function normalizeSync(sync) {
     ...(sync || {}),
     enabled: true,
     familyCode,
+    lastResetAt: sync && sync.lastResetAt ? normalizeDateValue(sync.lastResetAt) : "",
     deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : []
   };
 }
@@ -192,6 +194,14 @@ function normalizeFamilyCode(value) {
     .replace(/\s+/g, "-")
     .replace(/[^A-Z0-9_-]/g, "")
     .slice(0, 36);
+}
+
+function normalizeDateValue(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value.toDate === "function") return value.toDate().toISOString();
+  if (Number.isFinite(value.seconds)) return new Date(value.seconds * 1000).toISOString();
+  return "";
 }
 
 function isSyncEnabled() {
@@ -1022,6 +1032,7 @@ function changeFamilyCode(code) {
   state.sync.enabled = true;
   state.sync.familyCode = familyCode;
   state.sync.lastSyncedAt = "";
+  state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
   state.message = "Familien-Code geaendert.";
   familyCodeEditorOpen = false;
@@ -1034,14 +1045,6 @@ async function resetFamilyTree() {
   const familyCode = state.sync.familyCode;
   const firstOk = confirm(`Familie ${familyCode} wirklich komplett zuruecksetzen? Spieler, Spiele und Statistiken werden geloescht.`);
   if (!firstOk) return;
-
-  const typed = prompt("Zum Bestaetigen RESET eingeben:");
-  if (typed !== "RESET") {
-    state.message = "Reset abgebrochen.";
-    familyCodeEditorOpen = false;
-    saveAndRender();
-    return;
-  }
 
   if (!navigator.onLine) {
     state.message = "Reset braucht Internet, damit Firebase wirklich geleert wird.";
@@ -1059,16 +1062,17 @@ async function resetFamilyTree() {
   try {
     const db = await ensureFirebaseSession();
     const familyRef = db.collection("families").doc(familyCode);
+    const resetAt = new Date().toISOString();
     await clearFamilyCollection(familyRef, "players");
     await clearFamilyCollection(familyRef, "matches");
     await familyRef.set({
       code: familyCode,
       app: "NobsiBoard",
-      resetAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+      resetAt,
       updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    resetLocalFamilyState(familyCode);
+    resetLocalFamilyState(familyCode, resetAt);
     setSyncRuntime("synced", "Familie ist frisch und leer.", "", false);
     saveState();
   } catch (error) {
@@ -1091,7 +1095,7 @@ async function clearFamilyCollection(familyRef, collectionName) {
   }
 }
 
-function resetLocalFamilyState(familyCode) {
+function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), message = "Familie wurde komplett zurueckgesetzt.") {
   state = {
     ...clone(defaultState),
     players: [],
@@ -1105,10 +1109,12 @@ function resetLocalFamilyState(familyCode) {
       enabled: true,
       familyCode,
       lastSyncedAt: new Date().toISOString(),
+      lastResetAt: resetAt,
       deletedPlayerIds: []
     },
     activeGame: null,
-    message: "Familie wurde komplett zurueckgesetzt."
+    welcomeSeen: true,
+    message
   };
   guestPlayers = [];
   avatarEditorPlayerId = null;
@@ -1149,12 +1155,13 @@ async function syncWithFirebase({ manual = false } = {}) {
       updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
+    const remoteResetApplied = await applyRemoteFamilyReset(familyRef);
     await deleteQueuedRemotePlayers(familyRef);
     await pullRemoteData(familyRef);
     await pushLocalData(familyRef);
 
     state.sync.lastSyncedAt = new Date().toISOString();
-    state.message = manual ? "Alles ist aktuell." : state.message;
+    state.message = manual && !remoteResetApplied ? "Alles ist aktuell." : state.message;
     setSyncRuntime("synced", getLastSyncText(), "", false);
     saveState();
   } catch (error) {
@@ -1193,6 +1200,22 @@ async function ensureFirebaseSession() {
   }
 
   return firebaseDb;
+}
+
+async function applyRemoteFamilyReset(familyRef) {
+  const snapshot = await familyRef.get();
+  if (!snapshot.exists) return false;
+  const remoteResetAt = normalizeDateValue((snapshot.data() || {}).resetAt);
+  if (!remoteResetAt) return false;
+  if (getTime(remoteResetAt) <= getTime(state.sync.lastResetAt)) return false;
+
+  resetLocalFamilyState(
+    state.sync.familyCode,
+    remoteResetAt,
+    "Familie wurde auf einem anderen Geraet zurueckgesetzt."
+  );
+  saveState();
+  return true;
 }
 
 async function pullRemoteData(familyRef) {
