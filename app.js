@@ -1723,21 +1723,31 @@ async function applyUpdate() {
   updateReady = true;
   render();
 
+  const reloadSoon = (delay = 900) => {
+    window.setTimeout(() => {
+      if (!updateReloading) {
+        updateReloading = true;
+        window.location.reload();
+      }
+    }, delay);
+  };
+
   try {
     const registration = serviceWorkerRegistration || await navigator.serviceWorker.getRegistration();
+    if (registration && typeof registration.update === "function") {
+      await registration.update().catch(() => {});
+    }
     const worker = (registration && registration.waiting) || updateWorker;
     if (worker) {
       worker.postMessage({ type: "SKIP_WAITING" });
-      window.setTimeout(() => {
-        if (!updateReloading) window.location.reload();
-      }, 1800);
+      reloadSoon();
       return;
     }
   } catch {
     // Reload below is the fallback for browsers that do not expose the waiting worker cleanly.
   }
 
-  window.location.reload();
+  reloadSoon(120);
 }
 
 function addPlayer(name) {
