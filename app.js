@@ -1,4 +1,5 @@
 const STORAGE_KEY = "dartabend.local.v1";
+const DEVICE_ID_KEY = "nobsiboard.device.id";
 const DEFAULT_FAMILY_CODE = "NOBSI-DART-8K4P";
 
 const firebaseConfig = {
@@ -12,6 +13,13 @@ const firebaseConfig = {
 
 const colors = ["#0f766e", "#dc2626", "#2563eb", "#ca8a04", "#7c3aed", "#16a34a"];
 const dartNumbers = Array.from({ length: 20 }, (_, index) => index + 1);
+const featuredHistoryDarts = [
+  { label: "T20", type: "triple" },
+  { label: "T19", type: "triple" },
+  { label: "T18", type: "triple" },
+  { label: "Bull", type: "bull" },
+  { label: "Bullseye", type: "bullseye" }
+];
 const avatarOptions = {
   skin: ["#f2c29b", "#d99a6c", "#8d5524", "#f7d7b5", "#c68642", "#ffdbac"],
   hair: ["short", "spike", "side", "cap", "bald", "mohawk", "curls", "sweep"],
@@ -71,6 +79,13 @@ let firebaseDb = null;
 let firebasePersistenceTried = false;
 let familyResetUnsubscribe = null;
 let familyResetListenCode = "";
+let familyDataUnsubscribes = [];
+let familyDataListenCode = "";
+let activeGameUnsubscribe = null;
+let activeGameListenCode = "";
+let activeGameSyncTimer = null;
+let activeGameSyncRunning = false;
+let activeGameSyncPendingRevision = null;
 let syncTimer = null;
 let syncRunning = false;
 let syncRuntime = {
@@ -123,6 +138,20 @@ function createId() {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function getDeviceId() {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) return existing;
+    const deviceId = createId();
+    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+    return deviceId;
+  } catch {
+    return createId();
+  }
+}
+
+const DEVICE_ID = getDeviceId();
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -166,8 +195,8 @@ function normalizePlayers(players) {
     name: String(player.name || "Spieler").slice(0, 18),
     color: player.color || colors[index % colors.length],
     avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length]),
-    createdAt: player.createdAt || new Date().toISOString(),
-    updatedAt: player.updatedAt || player.createdAt || new Date().toISOString()
+    createdAt: normalizeDateValue(player.createdAt) || player.createdAt || new Date().toISOString(),
+    updatedAt: normalizeDateValue(player.updatedAt) || normalizeDateValue(player.createdAt) || player.updatedAt || player.createdAt || new Date().toISOString()
   }));
 }
 
@@ -779,9 +808,25 @@ function renderHistoryRow(match) {
       <div>
         <strong>${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen</strong>
         <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
+        ${renderMatchHighlights(match)}
       </div>
       <span class="small-pill">+3</span>
     </article>
+  `;
+}
+
+function renderMatchHighlights(match) {
+  const counts = {};
+  (match.players || []).forEach((player) => mergeCounts(counts, player.dartCounts));
+  const highlights = featuredHistoryDarts
+    .map((dart) => ({ ...dart, count: Number(counts[dart.label] || 0) }))
+    .filter((dart) => dart.count > 0);
+  if (!highlights.length) return "";
+
+  return `
+    <div class="history-highlights" aria-label="Hohe Treffer in diesem Spiel">
+      ${highlights.map((dart) => `<span class="history-dart-chip ${dart.type}"><span>${dart.label}</span><strong>${dart.count}x</strong></span>`).join("")}
+    </div>
   `;
 }
 
@@ -1039,6 +1084,8 @@ function changeFamilyCode(code) {
   state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
   stopFamilyResetWatcher();
+  stopFamilyDataWatchers();
+  stopActiveGameWatcher();
   state.message = "Familien-Code geaendert.";
   familyCodeEditorOpen = false;
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
@@ -1070,6 +1117,7 @@ async function resetFamilyTree() {
     const resetAt = new Date().toISOString();
     await clearFamilyCollection(familyRef, "players");
     await clearFamilyCollection(familyRef, "matches");
+    await clearFamilyCollection(familyRef, "activeGames");
     await familyRef.set({
       code: familyCode,
       app: "NobsiBoard",
@@ -1155,6 +1203,8 @@ async function syncWithFirebase({ manual = false } = {}) {
     const db = await ensureFirebaseSession();
     const familyRef = db.collection("families").doc(state.sync.familyCode);
     watchFamilyReset(familyRef);
+    watchFamilyData(familyRef);
+    watchActiveGame(familyRef);
     await familyRef.set({
       code: state.sync.familyCode,
       app: "NobsiBoard",
@@ -1214,6 +1264,91 @@ function stopFamilyResetWatcher() {
   }
   familyResetUnsubscribe = null;
   familyResetListenCode = "";
+}
+
+function stopFamilyDataWatchers() {
+  familyDataUnsubscribes.forEach((unsubscribe) => {
+    if (typeof unsubscribe === "function") unsubscribe();
+  });
+  familyDataUnsubscribes = [];
+  familyDataListenCode = "";
+}
+
+function stopActiveGameWatcher() {
+  if (typeof activeGameUnsubscribe === "function") activeGameUnsubscribe();
+  activeGameUnsubscribe = null;
+  activeGameListenCode = "";
+}
+
+function watchActiveGame(familyRef) {
+  if (!familyRef || typeof familyRef.collection !== "function" || activeGameListenCode === state.sync.familyCode) return;
+
+  stopActiveGameWatcher();
+  activeGameListenCode = state.sync.familyCode;
+  const activeGameRef = familyRef.collection("activeGames").doc("current");
+  activeGameUnsubscribe = activeGameRef.onSnapshot((snapshot) => {
+    if (activeGameListenCode !== state.sync.familyCode || !snapshot.exists) return;
+    const remoteGame = normalizeRemoteActiveGame(snapshot.data());
+    if (!remoteGame) return;
+    const localGame = state.activeGame;
+    const remoteRevision = Number(remoteGame.revision || 0);
+    const localRevision = Number(localGame && localGame.revision || 0);
+    const remoteIsNewer = !localGame
+      || remoteRevision > localRevision
+      || (remoteRevision === localRevision && getTime(remoteGame.updatedAt) > getTime(localGame.updatedAt));
+    if (!remoteIsNewer || remoteGame.deviceId === DEVICE_ID) return;
+
+    state.activeGame = remoteGame;
+    state.message = "Die laufende Partie wurde von einem anderen Geraet aktualisiert.";
+    saveAndRenderMain();
+  }, (error) => {
+    activeGameUnsubscribe = null;
+    activeGameListenCode = "";
+    setSyncRuntime("error", "Laufende Partie konnte nicht live geladen werden.", error && error.message ? error.message : "");
+  });
+}
+
+function watchFamilyData(familyRef) {
+  if (!familyRef || typeof familyRef.collection !== "function" || familyDataListenCode === state.sync.familyCode) return;
+
+  stopFamilyDataWatchers();
+  familyDataListenCode = state.sync.familyCode;
+
+  const handleListenerError = (error) => {
+    familyDataUnsubscribes = [];
+    familyDataListenCode = "";
+    setSyncRuntime("error", "Live-Synchronisierung nicht verfuegbar. Manuell pruefen bleibt moeglich.", error && error.message ? error.message : "");
+  };
+
+  const playerUnsubscribe = familyRef.collection("players").onSnapshot((snapshot) => {
+    if (familyDataListenCode !== state.sync.familyCode) return;
+    const deletedPlayerIds = snapshot.docs
+      .filter((doc) => doc.data() && doc.data().deleted === true)
+      .map((doc) => doc.id);
+    removeDeletedPlayers(deletedPlayerIds);
+
+    const pendingDeletes = new Set(state.sync.deletedPlayerIds || []);
+    const remotePlayers = snapshot.docs
+      .filter((doc) => !(doc.data() && doc.data().deleted === true) && !pendingDeletes.has(doc.id))
+      .map((doc) => normalizeRemotePlayer(doc.id, doc.data()))
+      .filter(Boolean);
+    mergeRemotePlayers(remotePlayers);
+    ensureSelectedPlayers();
+    saveState();
+    renderMainOnly();
+  }, handleListenerError);
+
+  const matchUnsubscribe = familyRef.collection("matches").onSnapshot((snapshot) => {
+    if (familyDataListenCode !== state.sync.familyCode) return;
+    const remoteMatches = snapshot.docs
+      .map((doc) => normalizeRemoteMatch(doc.id, doc.data()))
+      .filter(Boolean);
+    mergeRemoteMatches(remoteMatches);
+    saveState();
+    renderMainOnly();
+  }, handleListenerError);
+
+  familyDataUnsubscribes = [playerUnsubscribe, matchUnsubscribe];
 }
 
 function watchFamilyReset(familyRef) {
@@ -1381,11 +1516,11 @@ function ensureSelectedPlayers() {
 async function deleteQueuedRemotePlayers(familyRef) {
   const deletedIds = [...new Set(state.sync.deletedPlayerIds || [])];
   if (!deletedIds.length) return;
-  const deletedAt = new Date().toISOString();
   await Promise.all(deletedIds.map((id) => familyRef.collection("players").doc(id).set({
     deleted: true,
-    deletedAt,
-    updatedAt: deletedAt
+    deletedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: DEVICE_ID
   }, { merge: true })));
   state.sync.deletedPlayerIds = [];
 }
@@ -1399,6 +1534,64 @@ async function pushLocalData(familyRef) {
     return familyRef.collection("matches").doc(normalized.id).set(prepareMatchForRemote(normalized), { merge: true });
   });
   await Promise.all([...playerWrites, ...matchWrites]);
+}
+
+function queueActiveGameSync(expectedRevision) {
+  if (!isSyncEnabled() || !state.activeGame) return;
+  activeGameSyncPendingRevision = expectedRevision;
+  window.clearTimeout(activeGameSyncTimer);
+  activeGameSyncTimer = window.setTimeout(() => syncActiveGame(), 250);
+}
+
+async function syncActiveGame() {
+  if (activeGameSyncRunning || activeGameSyncPendingRevision === null || !state.activeGame || !navigator.onLine) return;
+  activeGameSyncRunning = true;
+  const expectedRevision = activeGameSyncPendingRevision;
+  activeGameSyncPendingRevision = null;
+  const game = clone(state.activeGame);
+
+  try {
+    const db = await ensureFirebaseSession();
+    const activeGameRef = db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current");
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(activeGameRef);
+      const remoteRevision = snapshot.exists ? Number(snapshot.data().revision || 0) : -1;
+      if (remoteRevision > expectedRevision) throw new Error("ACTIVE_GAME_CONFLICT");
+      transaction.set(activeGameRef, {
+        ...prepareActiveGameForRemote(game),
+        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+      });
+    });
+    setSyncRuntime("synced", "Laufende Partie synchron.", "", false);
+  } catch (error) {
+    if (error && error.message === "ACTIVE_GAME_CONFLICT") {
+      state.message = "Die Partie wurde gerade auf einem anderen Geraet geaendert. Der aktuelle Stand wird geladen.";
+      setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
+    } else {
+      setSyncRuntime("error", "Laufende Partie konnte nicht synchronisiert werden.", error && error.message ? error.message : "", false);
+    }
+  } finally {
+    activeGameSyncRunning = false;
+    saveState();
+    renderMainOnly();
+    if (activeGameSyncPendingRevision !== null) syncActiveGame();
+  }
+}
+
+async function clearRemoteActiveGame(expectedRevision) {
+  if (!isSyncEnabled() || !navigator.onLine) return;
+  try {
+    const db = await ensureFirebaseSession();
+    const activeGameRef = db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current");
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(activeGameRef);
+      if (!snapshot.exists || Number(snapshot.data().revision || 0) > expectedRevision) return;
+      transaction.delete(activeGameRef);
+    });
+  } catch {
+    state.message = "Die laufende Partie konnte noch nicht aus der Familie entfernt werden.";
+    saveState();
+  }
 }
 
 function normalizeRemotePlayer(id, data) {
@@ -1415,6 +1608,27 @@ function normalizeRemotePlayer(id, data) {
 
 function normalizeLocalMatch(match) {
   return normalizeRemoteMatch(match.id, match);
+}
+
+function normalizeRemoteActiveGame(data) {
+  const base = normalizeRemoteMatch(data && data.id ? data.id : "active", data);
+  if (!base) return null;
+  return {
+    ...base,
+    currentIndex: Math.max(0, Math.min(Number(data.currentIndex || 0), base.players.length - 1)),
+    currentThrows: Array.isArray(data.currentThrows)
+      ? data.currentThrows.map((dart) => ({
+        value: Number(dart.value || 0),
+        label: String(dart.label || dart.value || 0),
+        type: String(dart.type || "single")
+      }))
+      : [],
+    history: Array.isArray(data.history) ? data.history : [],
+    lastReaction: data.lastReaction || null,
+    revision: Number(data.revision || 0),
+    updatedAt: normalizeDateValue(data.updatedAt),
+    deviceId: String(data.deviceId || "")
+  };
 }
 
 function normalizeRemoteMatch(id, data) {
@@ -1451,7 +1665,8 @@ function preparePlayerForRemote(player) {
     avatar: normalizeAvatar(player.avatar, player.color || colors[0]),
     deleted: false,
     createdAt: player.createdAt || new Date().toISOString(),
-    updatedAt: player.updatedAt || new Date().toISOString()
+    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: DEVICE_ID
   };
 }
 
@@ -1464,6 +1679,24 @@ function prepareMatchForRemote(match) {
     checkout: match.checkout,
     winnerId: match.winnerId,
     players: match.players
+  };
+}
+
+function prepareActiveGameForRemote(game) {
+  return {
+    id: game.id,
+    startScore: game.startScore,
+    createdAt: game.createdAt,
+    finishedAt: game.finishedAt || null,
+    checkout: game.checkout,
+    winnerId: game.winnerId || null,
+    currentIndex: game.currentIndex,
+    currentThrows: game.currentThrows || [],
+    history: [],
+    lastReaction: game.lastReaction || null,
+    revision: Number(game.revision || 0),
+    deviceId: DEVICE_ID,
+    players: game.players
   };
 }
 
@@ -1492,6 +1725,9 @@ function startGame() {
     currentIndex: 0,
     currentThrows: [],
     history: [],
+    revision: 0,
+    updatedAt: new Date().toISOString(),
+    deviceId: DEVICE_ID,
     lastReaction: null,
     createdAt: new Date().toISOString(),
     finishedAt: null,
@@ -1515,11 +1751,13 @@ function startGame() {
   guestPlayers = [];
   state.message = "";
   saveAndRender();
+  queueActiveGameSync(-1);
 }
 
 function submitRound() {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
+  const expectedRevision = Number(game.revision || 0);
   let finishedMatch = false;
   const throws = game.currentThrows || [];
   if (throws.length === 0) {
@@ -1577,17 +1815,34 @@ function submitRound() {
     game.currentIndex = (game.currentIndex + 1) % game.players.length;
   }
 
+  game.revision = expectedRevision + 1;
+  game.updatedAt = new Date().toISOString();
+  game.deviceId = DEVICE_ID;
+
   saveAndRenderMain();
-  if (finishedMatch) queueSync();
+  if (finishedMatch) {
+    clearRemoteActiveGame(game.revision);
+    queueSync();
+  } else {
+    queueActiveGameSync(expectedRevision);
+  }
 }
 
 function undo() {
   const game = state.activeGame;
   if (!game || !game.history.length) return;
+  const expectedRevision = Number(game.revision || 0);
   const previous = game.history.pop();
-  state.activeGame = { ...previous, history: game.history };
+  state.activeGame = {
+    ...previous,
+    history: game.history,
+    revision: expectedRevision + 1,
+    updatedAt: new Date().toISOString(),
+    deviceId: DEVICE_ID
+  };
   state.message = "Letzte Eingabe wurde zurueckgenommen.";
   saveAndRenderMain();
+  queueActiveGameSync(expectedRevision);
 }
 
 function createUndoSnapshot(game) {
@@ -1797,9 +2052,11 @@ function deletePlayer(id) {
 function cancelGame() {
   if (!state.activeGame) return;
   if (!confirm("Aktuelles Spiel abbrechen?")) return;
+  const expectedRevision = Number(state.activeGame.revision || 0);
   state.activeGame = null;
   state.message = "";
   saveAndRender();
+  clearRemoteActiveGame(expectedRevision);
 }
 
 function saveAndRender() {
@@ -1854,9 +2111,11 @@ document.addEventListener("click", (event) => {
   if (action === "undo") undo();
   if (action === "cancel-game") cancelGame();
   if (action === "new-game") {
+    const expectedRevision = Number(state.activeGame && state.activeGame.revision || 0);
     state.activeGame = null;
     state.message = "";
     saveAndRender();
+    clearRemoteActiveGame(expectedRevision);
   }
   if (action === "open-avatar") openAvatarEditor(button.dataset.playerId);
   if (action === "close-avatar") closeAvatarEditor();

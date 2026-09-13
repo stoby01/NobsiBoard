@@ -1242,6 +1242,39 @@ button:disabled {
   align-items: center;
 }
 
+.history-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.history-dart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.history-dart-chip.triple {
+  background: #b91c1c;
+}
+
+.history-dart-chip.bull {
+  background: #ca8a04;
+}
+
+.history-dart-chip.bullseye {
+  background: #dc2626;
+}
+
 .player-row {
   grid-template-columns: 1fr auto;
   align-items: center;

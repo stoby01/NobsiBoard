@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validFamilyCode(familyCode) {
+      return familyCode.matches('^[A-Z0-9_-]{4,36}$');
+    }
+
+    match /families/{familyCode} {
+      allow read, write: if signedIn() && validFamilyCode(familyCode);
+
+      match /players/{playerId} {
+        allow read, write: if signedIn() && validFamilyCode(familyCode);
+      }
+
+      match /matches/{matchId} {
+        allow read, write: if signedIn() && validFamilyCode(familyCode);
+      }
+
+      match /activeGames/{gameId} {
+        allow read, write: if signedIn() && validFamilyCode(familyCode);
+      }
+    }
+  }
+}
