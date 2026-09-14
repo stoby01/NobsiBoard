@@ -1263,6 +1263,61 @@ button:disabled {
   font-weight: 750;
 }
 
+.player-hit-breakdown {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.player-hit-breakdown .section-title {
+  margin-bottom: 0;
+}
+
+.player-hit-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.player-hit-group {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.player-hit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.player-hit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.player-hit-chip.triple {
+  background: #b91c1c;
+}
+
+.player-hit-chip.double {
+  background: #0f766e;
+}
+
+.player-hit-chip.bull {
+  background: #ca8a04;
+}
+
 .history-row {
   grid-template-columns: 1fr auto;
   align-items: center;

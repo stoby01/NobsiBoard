@@ -754,6 +754,14 @@ function renderPlayerStatsView(row) {
           <div class="stat-box"><span class="stat-value">${row.typeCounts.triple}</span><span class="stat-label">Triple getroffen</span></div>
           <div class="stat-box"><span class="stat-value">${row.typeCounts.double}</span><span class="stat-label">Double getroffen</span></div>
         </div>
+
+        <div class="player-hit-breakdown">
+          <div class="section-title">
+            <h2>Eigene Treffer</h2>
+            <span class="hint">Feld und Anzahl</span>
+          </div>
+          ${renderPlayerHitGroups(row.dartCounts)}
+        </div>
       </div>
 
       <div class="grid">
@@ -802,6 +810,36 @@ function renderDartFrequency(item, totalDarts) {
       <span class="small-pill">${item.count}x</span>
     </div>
   `;
+}
+
+function renderPlayerHitGroups(counts) {
+  const groups = [
+    { label: "Triple", type: "triple", entries: getPlayerHitEntries(counts, /^T\d+$/) },
+    { label: "Double", type: "double", entries: getPlayerHitEntries(counts, /^D\d+$/) },
+    { label: "Bull", type: "bull", entries: getPlayerHitEntries(counts, /^(Bull|Bullseye)$/) }
+  ];
+
+  return `
+    <div class="player-hit-groups">
+      ${groups.map((group) => `
+        <div class="player-hit-group">
+          <strong>${group.label}</strong>
+          <div class="player-hit-chips">
+            ${group.entries.length
+              ? group.entries.map((entry) => `<span class="player-hit-chip ${group.type}"><span>${escapeHtml(entry.label)}</span><b>${entry.count}x</b></span>`).join("")
+              : `<span class="hint">Noch keine Treffer</span>`}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function getPlayerHitEntries(counts, pattern) {
+  return Object.entries(counts || {})
+    .filter(([label, count]) => pattern.test(label) && Number(count) > 0)
+    .map(([label, count]) => ({ label, count: Number(count) }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "de-DE", { numeric: true }));
 }
 
 function getTopDarts(counts, limit) {
