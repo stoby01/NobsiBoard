@@ -81,7 +81,10 @@ let updateReady = false;
 let updateApplying = false;
 let updateWorker = null;
 let updateReloading = false;
+let updateCheckRunning = false;
+let updateCheckQueued = false;
 let serviceWorkerRegistration = null;
+let serviceWorkerWatchAttached = false;
 let firebaseApp = null;
 let firebaseAuth = null;
 let firebaseDb = null;
@@ -2174,10 +2177,32 @@ function closeWelcome() {
 }
 
 function showUpdateReady(worker) {
+  if (!worker) return;
   updateWorker = worker;
   updateReady = true;
   updateApplying = false;
   render();
+}
+
+async function checkForAppUpdate() {
+  if (!serviceWorkerRegistration || updateCheckRunning) {
+    updateCheckQueued = Boolean(serviceWorkerRegistration);
+    return;
+  }
+  updateCheckRunning = true;
+  updateCheckQueued = false;
+  try {
+    await serviceWorkerRegistration.update();
+    watchServiceWorker(serviceWorkerRegistration);
+  } catch {
+    // Offline or an unavailable update server must not interrupt the app.
+  } finally {
+    updateCheckRunning = false;
+    if (updateCheckQueued) {
+      updateCheckQueued = false;
+      window.setTimeout(() => checkForAppUpdate(), 1000);
+    }
+  }
 }
 
 async function applyUpdate() {
@@ -2185,31 +2210,30 @@ async function applyUpdate() {
   updateReady = true;
   render();
 
-  const reloadSoon = (delay = 900) => {
-    window.setTimeout(() => {
-      if (!updateReloading) {
-        updateReloading = true;
-        window.location.reload();
-      }
-    }, delay);
-  };
-
   try {
     const registration = serviceWorkerRegistration || await navigator.serviceWorker.getRegistration();
-    if (registration && typeof registration.update === "function") {
-      await registration.update().catch(() => {});
-    }
-    const worker = (registration && registration.waiting) || updateWorker;
+    if (registration && typeof registration.update === "function") await registration.update().catch(() => {});
+    const worker = (registration && (registration.waiting || registration.installing)) || updateWorker;
     if (worker) {
-      worker.postMessage({ type: "SKIP_WAITING" });
-      reloadSoon();
+      if (worker.state !== "activated") worker.postMessage({ type: "SKIP_WAITING" });
+      window.setTimeout(() => {
+        if (!updateReloading) {
+          updateReloading = true;
+          window.location.reload();
+        }
+      }, 1500);
       return;
     }
   } catch {
-    // Reload below is the fallback for browsers that do not expose the waiting worker cleanly.
+    // The reload below is the fallback for browsers with incomplete SW update support.
   }
 
-  reloadSoon(120);
+  window.setTimeout(() => {
+    if (!updateReloading) {
+      updateReloading = true;
+      window.location.reload();
+    }
+  }, 250);
 }
 
 function addPlayer(name) {
@@ -2403,34 +2427,30 @@ if ("serviceWorker" in navigator && navigator.serviceWorker) {
     navigator.serviceWorker.register("./sw.js").then((registration) => {
       serviceWorkerRegistration = registration;
       watchServiceWorker(registration);
-      registration.update().catch(() => {});
+      checkForAppUpdate();
     }).catch(() => {});
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && serviceWorkerRegistration) {
-      serviceWorkerRegistration.update().catch(() => {});
-    }
+    if (document.visibilityState === "visible") checkForAppUpdate();
   });
 
   window.setInterval(() => {
-    if (serviceWorkerRegistration) serviceWorkerRegistration.update().catch(() => {});
+    checkForAppUpdate();
   }, 30 * 60 * 1000);
 }
 
 function watchServiceWorker(registration) {
   serviceWorkerRegistration = registration;
-  if (registration.waiting && navigator.serviceWorker.controller) {
-    showUpdateReady(registration.waiting);
-  }
+  if (registration.waiting && navigator.serviceWorker.controller) showUpdateReady(registration.waiting);
+  if (serviceWorkerWatchAttached) return;
+  serviceWorkerWatchAttached = true;
 
   registration.addEventListener("updatefound", () => {
     const worker = registration.installing;
     if (!worker) return;
     worker.addEventListener("statechange", () => {
-      if (worker.state === "installed" && navigator.serviceWorker.controller) {
-        showUpdateReady(worker);
-      }
+      if (worker.state === "installed" && navigator.serviceWorker.controller) showUpdateReady(worker);
     });
   });
 }
