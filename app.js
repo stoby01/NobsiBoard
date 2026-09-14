@@ -20,6 +20,13 @@ const featuredHistoryDarts = [
   { label: "Bull", type: "bull" },
   { label: "Bullseye", type: "bullseye" }
 ];
+const globalTrackedDarts = [
+  { label: "T18", type: "triple" },
+  { label: "T17", type: "triple" },
+  { label: "T20", type: "triple" },
+  { label: "Bull", type: "bull" },
+  { label: "Bullseye", type: "bullseye" }
+];
 const avatarOptions = {
   skin: ["#f2c29b", "#d99a6c", "#8d5524", "#f7d7b5", "#c68642", "#ffdbac"],
   hair: ["short", "spike", "side", "cap", "bald", "mohawk", "curls", "sweep"],
@@ -64,6 +71,8 @@ let state = loadState();
 let guestPlayers = [];
 let avatarEditorPlayerId = null;
 let activeStatsPlayerId = null;
+let activeMatchId = null;
+let activeGlobalHitCategory = "";
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
 let familyCodeEditorOpen = false;
@@ -305,6 +314,8 @@ function renderOverlays() {
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
+    ${activeMatchId ? renderMatchDetails() : ""}
+    ${activeGlobalHitCategory ? renderGlobalHitDetails() : ""}
   `;
 }
 
@@ -532,6 +543,11 @@ function renderActiveGame() {
   const isFinished = Boolean(game.finishedAt);
   const throws = game.currentThrows || [];
   const roundTotal = throws.reduce((sum, dart) => sum + dart.value, 0);
+  const projectedRemaining = current.remaining - roundTotal;
+  const lastDart = throws[throws.length - 1];
+  const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
+  const projectedBust = throws.length > 0 && (projectedRemaining < 0
+    || (game.checkout === "double" && (projectedRemaining === 1 || (projectedRemaining === 0 && !isDoubleFinish))));
   const canAddThrow = throws.length < 3;
 
   return `
@@ -558,6 +574,10 @@ function renderActiveGame() {
             <div>
               <span class="throw-label">Runde</span>
               <strong>${roundTotal}</strong>
+            </div>
+            <div class="throw-projection ${projectedBust ? "is-bust" : ""}">
+              <span class="throw-label">Rest vorauss.</span>
+              <strong>${throws.length ? (projectedBust ? "Bust" : projectedRemaining) : "-"}</strong>
             </div>
             <div class="throw-list" aria-label="Geworfene Darts">
               ${throws.length ? throws.map((dart) => `<span>${escapeHtml(dart.label)}</span>`).join("") : `<span>1. Dart</span><span>2. Dart</span><span>3. Dart</span>`}
@@ -665,6 +685,14 @@ function renderStatsView() {
             <h2>Bestwerte</h2>
           </div>
           ${renderBestStats(ranked)}
+        </div>
+
+        <div class="panel panel-pad">
+          <div class="section-title">
+            <h2>Treffer-Details</h2>
+            <span class="hint">Antippen</span>
+          </div>
+          ${renderGlobalHitCategories()}
         </div>
 
         <div class="panel panel-pad">
@@ -800,19 +828,130 @@ function renderBestStats(ranked) {
   `;
 }
 
+function getGlobalFeaturedCounts() {
+  const counts = Object.fromEntries(globalTrackedDarts.map((dart) => [dart.label, 0]));
+  state.matches.forEach((match) => {
+    (match.players || []).forEach((player) => {
+      globalTrackedDarts.forEach((dart) => {
+        counts[dart.label] += Number((player.dartCounts || {})[dart.label] || 0);
+      });
+    });
+  });
+  return counts;
+}
+
+function renderGlobalHitCategories() {
+  const counts = getGlobalFeaturedCounts();
+  const tripleTotal = ["T18", "T17", "T20"].reduce((total, label) => total + counts[label], 0);
+  const bullTotal = counts.Bull + counts.Bullseye;
+  return `
+    <div class="stats-grid">
+      <button class="stat-box stat-action" data-action="show-global-hit-details" data-category="triple">
+        <span class="stat-value">${tripleTotal}</span>
+        <span class="stat-label">Triple</span>
+      </button>
+      <button class="stat-box stat-action" data-action="show-global-hit-details" data-category="bull">
+        <span class="stat-value">${bullTotal}</span>
+        <span class="stat-label">Bull</span>
+      </button>
+    </div>
+  `;
+}
+
+function renderGlobalHitDetails() {
+  const counts = getGlobalFeaturedCounts();
+  const isTriple = activeGlobalHitCategory === "triple";
+  const details = (isTriple ? ["T18", "T17", "T20"] : ["Bull", "Bullseye"])
+    .map((label) => ({ label, count: counts[label], type: globalTrackedDarts.find((dart) => dart.label === label).type }));
+  return `
+    <div class="modal-backdrop">
+      <section class="hit-details-card" role="dialog" aria-modal="true" aria-label="Treffer-Details">
+        <div class="editor-head">
+          <div>
+            <h2>${isTriple ? "Triple-Treffer" : "Bull-Treffer"}</h2>
+            <p class="hint">Gesamt aus allen gespeicherten Spielen</p>
+          </div>
+          <button class="icon-button" data-action="close-global-hit-details" aria-label="Schliessen">X</button>
+        </div>
+        <div class="hit-detail-list">
+          ${details.map((detail) => `
+            <div class="hit-detail-row">
+              <span class="detail-dart-chip ${detail.type}">${detail.label}</span>
+              <strong>${detail.count}x getroffen</strong>
+            </div>
+          `).join("")}
+        </div>
+        <button class="secondary" data-action="close-global-hit-details">Schliessen</button>
+      </section>
+    </div>
+  `;
+}
+
 function renderHistoryRow(match) {
   const winner = state.players.find((player) => player.id === match.winnerId) || match.players.find((player) => player.id === match.winnerId);
   const date = new Date(match.finishedAt).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
   return `
-    <article class="history-row">
+    <button class="history-row history-button" data-action="show-match-details" data-match-id="${escapeHtml(match.id)}">
       <div>
         <strong>${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen</strong>
         <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
         ${renderMatchHighlights(match)}
       </div>
       <span class="small-pill">+3</span>
-    </article>
+    </button>
   `;
+}
+
+function renderMatchDetails() {
+  const match = state.matches.find((item) => item.id === activeMatchId);
+  if (!match) return "";
+  const hasDetails = match.players.some((player) => Array.isArray(player.roundDetails) && player.roundDetails.length);
+  const date = new Date(match.finishedAt).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+  return `
+    <div class="modal-backdrop">
+      <section class="match-details-card" role="dialog" aria-modal="true" aria-label="Spieldetails">
+        <div class="editor-head">
+          <div>
+            <h2>Spieldetails</h2>
+            <p class="hint">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"}</p>
+          </div>
+          <button class="icon-button" data-action="close-match-details" aria-label="Schliessen">X</button>
+        </div>
+        <div class="match-detail-players">
+          ${match.players.map(renderMatchPlayerDetails).join("")}
+        </div>
+        ${hasDetails ? "" : `<p class="empty">Für dieses alte Spiel wurden noch keine einzelnen Würfe gespeichert. Neue Spiele werden hier vollständig angezeigt.</p>`}
+        <button class="secondary" data-action="close-match-details">Schliessen</button>
+      </section>
+    </div>
+  `;
+}
+
+function renderMatchPlayerDetails(player) {
+  const rounds = Array.isArray(player.roundDetails) ? player.roundDetails : [];
+  return `
+    <section class="match-player-details">
+      <div class="section-title">
+        <div class="player-name"><span class="dot" style="background:${player.color}"></span><h3>${escapeHtml(player.name)}</h3></div>
+        <span class="small-pill">${player.rounds} Runden</span>
+      </div>
+      ${rounds.length ? rounds.map((roundDetail, index) => `
+        <div class="round-detail-row">
+          <span class="round-number">Runde ${index + 1}</span>
+          <div class="round-darts">${(roundDetail.darts || []).map(renderDetailDart).join("")}</div>
+          <span class="small-pill">${roundDetail.bust ? "Bust" : `${Number(roundDetail.score || 0)} Pkt`}</span>
+        </div>
+      `).join("") : `<p class="empty">Keine Wurfdetails vorhanden.</p>`}
+    </section>
+  `;
+}
+
+function renderDetailDart(dart) {
+  const label = String(dart.label || dart.value || "0");
+  const featured = featuredHistoryDarts.find((item) => item.label === label);
+  if (!featured) return `<span class="detail-number">${escapeHtml(label)}</span>`;
+  return `<span class="detail-dart-chip ${featured.type}">${escapeHtml(label)}</span>`;
 }
 
 function renderMatchHighlights(match) {
@@ -1653,8 +1792,21 @@ function normalizeRemoteMatch(id, data) {
       totalDarts: Number(player.totalDarts || 0),
       dartCounts: player.dartCounts || {},
       typeCounts: { ...createTypeCounts(), ...(player.typeCounts || {}) },
-      roundScores: Array.isArray(player.roundScores) ? player.roundScores.map(Number) : []
+      roundScores: Array.isArray(player.roundScores) ? player.roundScores.map(Number) : [],
+      roundDetails: Array.isArray(player.roundDetails) ? player.roundDetails.map(normalizeRoundDetail) : []
     }))
+  };
+}
+
+function normalizeRoundDetail(roundDetail) {
+  return {
+    darts: Array.isArray(roundDetail && roundDetail.darts) ? roundDetail.darts.map((dart) => ({
+      value: Number(dart.value || 0),
+      label: String(dart.label || dart.value || 0),
+      type: String(dart.type || "single")
+    })) : [],
+    score: Number(roundDetail && roundDetail.score || 0),
+    bust: Boolean(roundDetail && roundDetail.bust)
   };
 }
 
@@ -1745,7 +1897,9 @@ function startGame() {
       totalDarts: 0,
       dartCounts: {},
       typeCounts: createTypeCounts(),
-      roundScores: []
+      roundScores: [],
+      roundDetails: [],
+      roundDetails: []
     }))
   };
   guestPlayers = [];
@@ -1794,6 +1948,12 @@ function submitRound() {
     state.message = score === 180 ? "180! Sehr stark." : "";
   }
 
+  player.roundDetails.push({
+    darts: clone(throws),
+    score: nextRemaining < 0 || invalidDoubleOut ? 0 : score,
+    bust: nextRemaining < 0 || invalidDoubleOut
+  });
+
   game.currentThrows = [];
 
   if (player.remaining === 0) {
@@ -1820,12 +1980,21 @@ function submitRound() {
   game.deviceId = DEVICE_ID;
 
   saveAndRenderMain();
+  scrollToActiveScore();
   if (finishedMatch) {
     clearRemoteActiveGame(game.revision);
     queueSync();
   } else {
     queueActiveGameSync(expectedRevision);
   }
+}
+
+function scrollToActiveScore() {
+  window.requestAnimationFrame(() => {
+    const remaining = document.querySelector(".scorecard.active .remaining");
+    if (!remaining) return;
+    remaining.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  });
 }
 
 function undo() {
@@ -2127,6 +2296,22 @@ document.addEventListener("click", (event) => {
   if (action === "back-to-global") {
     activeStatsPlayerId = null;
     saveAndRender();
+  }
+  if (action === "show-match-details") {
+    activeMatchId = button.dataset.matchId;
+    render();
+  }
+  if (action === "close-match-details") {
+    activeMatchId = null;
+    render();
+  }
+  if (action === "show-global-hit-details") {
+    activeGlobalHitCategory = button.dataset.category;
+    render();
+  }
+  if (action === "close-global-hit-details") {
+    activeGlobalHitCategory = "";
+    render();
   }
   if (action === "install-app") installApp();
   if (action === "close-install-help") closeInstallHelp();
