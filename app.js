@@ -608,7 +608,7 @@ function renderActiveGame() {
           </div>
 
           <div class="actions">
-            <button class="primary" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>Runde speichern</button>
+            <button class="primary ${projectedBust ? "bust-action" : ""}" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>${projectedBust ? "BUST!" : "Runde speichern"}</button>
             <button class="secondary" data-action="remove-last-dart" ${throws.length === 0 ? "disabled" : ""}>Wurf zurueck</button>
             <button class="secondary" data-action="undo" ${game.history.length === 0 ? "disabled" : ""}>Runde zurueck</button>
             <button class="ghost" data-action="clear-throws">Runde leeren</button>
@@ -1939,7 +1939,6 @@ function startGame() {
       dartCounts: {},
       typeCounts: createTypeCounts(),
       roundScores: [],
-      roundDetails: [],
       roundDetails: []
     }))
   };
@@ -1969,31 +1968,29 @@ function submitRound() {
   const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
 
   game.history.push(before);
-  player.rounds += 1;
-  recordDartDetails(player, throws);
 
   const invalidDoubleOut = game.checkout === "double" && (nextRemaining === 1 || (nextRemaining === 0 && !isDoubleFinish));
 
   if (nextRemaining < 0 || invalidDoubleOut) {
     game.lastReaction = { playerId: player.id, type: "bust" };
-    player.roundScores.push(0);
     state.message = invalidDoubleOut
       ? `Double Out: ${player.name} braucht ein passendes Double.`
       : `${player.name} ist ueberworfen. Runde zaehlt als 0.`;
   } else {
+    player.rounds += 1;
+    recordDartDetails(player, throws);
     player.remaining = nextRemaining;
     player.throwsTotal += score;
     player.highestThrow = Math.max(player.highestThrow, score);
     player.roundScores.push(score);
+    player.roundDetails.push({
+      darts: clone(throws),
+      score,
+      bust: false
+    });
     game.lastReaction = score >= 100 ? { playerId: player.id, type: "big" } : null;
     state.message = score === 180 ? "180! Sehr stark." : "";
   }
-
-  player.roundDetails.push({
-    darts: clone(throws),
-    score: nextRemaining < 0 || invalidDoubleOut ? 0 : score,
-    bust: nextRemaining < 0 || invalidDoubleOut
-  });
 
   game.currentThrows = [];
 

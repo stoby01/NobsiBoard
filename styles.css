@@ -1153,6 +1153,11 @@ button:disabled {
   min-height: 52px;
 }
 
+.actions .bust-action {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
 .message {
   min-height: 42px;
   display: flex;
