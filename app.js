@@ -587,6 +587,15 @@ function renderActiveGame() {
             </div>
           </div>
 
+          ${game.lastSavedRound && game.lastSavedRound.length ? `
+            <div class="last-round-preview" aria-label="Letzte gespeicherte Runde">
+              <span class="throw-label">Letzte Runde</span>
+              <div class="last-round-darts">
+                ${game.lastSavedRound.map((dart) => `<span class="last-round-chip ${dart.type || "single"}">${escapeHtml(dart.label)}</span>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+
           <div class="dart-pad" aria-label="Dartfelder">
             <div class="dart-section">
               <div class="pad-title">Single</div>
@@ -855,16 +864,29 @@ function getTopDarts(counts, limit) {
 
 function renderBestStats(ranked) {
   const mostWins = [...ranked].sort((a, b) => b.wins - a.wins)[0];
-  const highest = [...ranked].sort((a, b) => b.highestThrow - a.highestThrow)[0];
+  const highest = [...ranked].filter((row) => row.rounds > 0).sort((a, b) => b.highestThrow - a.highestThrow)[0];
   const bestAverage = [...ranked].filter((row) => row.rounds > 0).sort((a, b) => b.average - a.average)[0];
+  const highestNames = highest ? ranked.filter((row) => row.rounds > 0 && row.highestThrow === highest.highestThrow).map((row) => row.name).join(", ") : "-";
+  const bestAverageNames = bestAverage ? ranked.filter((row) => row.rounds > 0 && row.average === bestAverage.average).map((row) => row.name).join(", ") : "-";
+  const t20Hunter = [...ranked]
+    .map((row) => ({ name: row.name, count: Number((row.dartCounts || {})["T20"] || 0) }))
+    .filter((row) => row.count > 0)
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))[0];
   const played = state.matches.length;
 
   return `
     <div class="stats-grid">
       <div class="stat-box"><span class="stat-value">${played}</span><span class="stat-label">Spiele</span></div>
       <div class="stat-box"><span class="stat-value">${mostWins ? escapeHtml(mostWins.name) : "-"}</span><span class="stat-label">Meiste Siege</span></div>
-      <div class="stat-box"><span class="stat-value">${highest ? highest.highestThrow : 0}</span><span class="stat-label">Hoechster Wurf</span></div>
-      <div class="stat-box"><span class="stat-value">${bestAverage ? bestAverage.average : 0}</span><span class="stat-label">Bester Schnitt</span></div>
+      <div class="stat-box"><span class="stat-value">${highest ? highest.highestThrow : 0}</span><span class="stat-label">Hoechster Wurf</span><span class="stat-owner">${escapeHtml(highestNames)}</span></div>
+      <div class="stat-box"><span class="stat-value">${bestAverage ? bestAverage.average : 0}</span><span class="stat-label">Bester Schnitt</span><span class="stat-owner">${escapeHtml(bestAverageNames)}</span></div>
+      <div class="stat-box">
+        <span class="stat-value stat-inline">
+          <span>${t20Hunter ? escapeHtml(t20Hunter.name) : "-"}</span>
+          <small>${t20Hunter ? `${t20Hunter.count}x` : "0x"}</small>
+        </span>
+        <span class="stat-label">T20 Jaeger</span>
+      </div>
     </div>
   `;
 }
@@ -1993,6 +2015,8 @@ function submitRound() {
   }
 
   game.currentThrows = [];
+
+  game.lastSavedRound = clone(throws);
 
   if (player.remaining === 0) {
     game.finishedAt = new Date().toISOString();

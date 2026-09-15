@@ -35,6 +35,11 @@ select {
 
 button {
   touch-action: manipulation;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+button:active {
+  transform: translateY(1px) scale(0.98);
 }
 
 .shell {
@@ -1158,6 +1163,46 @@ button:disabled {
   border-color: #b91c1c;
 }
 
+.last-round-preview {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(34, 197, 94, 0.12);
+  padding: 8px 10px;
+}
+
+.last-round-darts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.last-round-chip {
+  min-width: 52px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.last-round-chip.triple {
+  background: rgba(185, 28, 28, 0.18);
+  color: #fecaca;
+}
+
+.last-round-chip.bull,
+.last-round-chip.bullseye {
+  background: rgba(250, 204, 21, 0.14);
+  color: #fef3c7;
+}
+
 .message {
   min-height: 42px;
   display: flex;
@@ -1266,6 +1311,27 @@ button:disabled {
 .stat-label {
   color: var(--muted);
   font-weight: 750;
+}
+
+.stat-owner {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.9rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.stat-inline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stat-inline small {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
 }
 
 .player-hit-breakdown {
