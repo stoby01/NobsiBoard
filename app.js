@@ -2066,6 +2066,15 @@ function addDart(value, label, type) {
   game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
   renderMainOnly();
+  if (game.currentThrows.length === 3) scrollToSubmitRound();
+}
+
+function scrollToSubmitRound() {
+  window.requestAnimationFrame(() => {
+    const submitButton = document.querySelector('[data-action="submit-round"]');
+    if (!submitButton) return;
+    submitButton.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  });
 }
 
 function createTypeCounts() {
