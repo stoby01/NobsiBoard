@@ -573,17 +573,16 @@ function renderActiveGame() {
             </div>
           </div>
 
-          <div class="throw-summary">
-            <div>
-              <span class="throw-label">Runde</span>
-              <strong>${roundTotal}</strong>
+          <div class="throw-summary" aria-label="Aktuelle Eingabe und Restpunkte">
+            <div class="throw-entry">
+              <span class="throw-label">Eingabe &middot; Runde <b>${roundTotal}</b></span>
+              <div class="throw-list" aria-label="Geworfene Darts">
+                ${[0, 1, 2].map((index) => `<span class="${throws[index] ? "" : "is-empty"}">${throws[index] ? escapeHtml(throws[index].label) : `${index + 1}. Dart`}</span>`).join("")}
+              </div>
             </div>
             <div class="throw-projection ${projectedBust ? "is-bust" : ""}">
-              <span class="throw-label">Rest vorauss.</span>
-              <strong>${throws.length ? (projectedBust ? "Bust" : projectedRemaining) : "-"}</strong>
-            </div>
-            <div class="throw-list" aria-label="Geworfene Darts">
-              ${throws.length ? throws.map((dart) => `<span>${escapeHtml(dart.label)}</span>`).join("") : `<span>1. Dart</span><span>2. Dart</span><span>3. Dart</span>`}
+              <span class="throw-label">Rest</span>
+              <strong>${projectedBust ? "Bust" : projectedRemaining}</strong>
             </div>
           </div>
 
@@ -2090,11 +2089,26 @@ function addDart(value, label, type) {
   game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
   renderMainOnly();
-  if (game.currentThrows.length === 3) scrollToSubmitRound();
+  // The original button was replaced by renderMainOnly; animate the new one.
+  const pressedButton = [...app.querySelectorAll('[data-action="add-dart"]')]
+    .find((button) => button.dataset.label === label && button.dataset.type === type);
+  if (pressedButton) {
+    pressedButton.classList.add("dart-feedback");
+    pressedButton.addEventListener("animationend", () => {
+      pressedButton.classList.remove("dart-feedback");
+    }, { once: true });
+  }
+  if (game.currentThrows.length === 3) {
+    // Let the confirmation show before scrolling the keypad out of view.
+    const confirmedDart = game.currentThrows[2];
+    window.setTimeout(() => scrollToSubmitRound(game, confirmedDart), 300);
+  }
 }
 
-function scrollToSubmitRound() {
+function scrollToSubmitRound(game, confirmedDart) {
   window.requestAnimationFrame(() => {
+    if (state.activeView !== "game" || state.activeGame !== game
+      || game.currentThrows.length !== 3 || game.currentThrows[2] !== confirmedDart) return;
     const submitButton = document.querySelector('[data-action="submit-round"]');
     if (!submitButton) return;
     submitButton.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });

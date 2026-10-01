@@ -11,6 +11,7 @@
   --gold: #f59e0b;
   --green: #16a34a;
   --shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+  --tabs-height: 64px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -128,7 +129,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 8px;
   position: sticky;
-  top: 0;
+  top: env(safe-area-inset-top, 0px);
   z-index: 4;
 }
 
@@ -1016,17 +1017,27 @@ button:disabled {
 }
 
 .throw-summary {
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + var(--tabs-height) + 6px);
+  z-index: 5;
   display: grid;
-  grid-template-columns: auto auto 1fr;
-  gap: 12px;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  background: var(--ink);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
 }
 
-.throw-summary > div {
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 10px;
+.throw-entry {
+  min-width: 0;
+}
+
+.throw-summary .throw-label {
+  margin-bottom: 4px;
+  font-size: 0.75rem;
 }
 
 .throw-label {
@@ -1038,17 +1049,21 @@ button:disabled {
 
 .throw-summary strong {
   display: block;
-  font-size: 2.4rem;
+  font-size: 1.8rem;
   line-height: 1;
   font-weight: 950;
 }
 
 .throw-projection {
-  color: rgba(255, 255, 255, 0.58);
+  min-width: 68px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.24);
+  text-align: right;
+  color: white;
 }
 
 .throw-projection strong {
-  color: rgba(255, 255, 255, 0.64);
+  color: white;
 }
 
 .throw-projection.is-bust,
@@ -1057,22 +1072,29 @@ button:disabled {
 }
 
 .throw-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-content: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
 }
 
 .throw-list span {
-  min-width: 70px;
-  min-height: 42px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.14);
   color: white;
+  font-size: 0.82rem;
   font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.throw-list .is-empty {
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 600;
 }
 
 .dart-pad {
@@ -1108,6 +1130,45 @@ button:disabled {
   font-size: 1.02rem;
   color: white;
   border-color: rgba(255, 255, 255, 0.18);
+}
+
+.dart-button.dart-feedback {
+  animation: dart-confirm 280ms ease-out;
+}
+
+@keyframes dart-confirm {
+  0%, 40% {
+    transform: translateY(1px) scale(0.94);
+    box-shadow: inset 0 0 0 3px white;
+    filter: brightness(1.35);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    box-shadow: inset 0 0 0 0 transparent;
+    filter: brightness(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dart-button {
+    transition: none;
+  }
+
+  .dart-button:active {
+    transform: none;
+  }
+
+  .dart-button.dart-feedback {
+    animation-name: dart-confirm-reduced;
+  }
+
+  @keyframes dart-confirm-reduced {
+    0%, 100% {
+      box-shadow: inset 0 0 0 3px white;
+      opacity: 1;
+    }
+  }
 }
 
 .dart-button.single {
@@ -1983,8 +2044,7 @@ button:disabled {
   }
 
   .two-col,
-  .score-entry,
-  .throw-summary {
+  .score-entry {
     grid-template-columns: 1fr;
   }
 
@@ -2040,6 +2100,10 @@ button:disabled {
 }
 
 @media (max-width: 430px) {
+  :root {
+    --tabs-height: 60px;
+  }
+
   h1 {
     font-size: 1.34rem;
   }
