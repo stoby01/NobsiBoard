@@ -43,6 +43,12 @@ const avatarOptions = {
   accessory: ["none", "dart", "medal", "star"]
 };
 
+const gameModes = [
+  { id: "classic-301", kind: "classic", category: "classic", name: "301", subtitle: "Kurz", startScore: 301, minPlayers: 2, fixedCheckout: null },
+  { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
+  { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
+];
+
 const defaultState = {
   activeView: "game",
   players: [
@@ -51,6 +57,7 @@ const defaultState = {
   ],
   matches: [],
   setup: {
+    mode: "classic",
     startScore: 501,
     checkout: "straight",
     selectedPlayerIds: []
@@ -77,6 +84,9 @@ let deferredInstallPrompt = null;
 let installHelpOpen = false;
 let familyCodeEditorOpen = false;
 let welcomeOpen = !state.welcomeSeen;
+let modePickerOpen = false;
+let modePickerCategory = "classic";
+let pendingModeId = "";
 let updateReady = false;
 let updateApplying = false;
 let updateWorker = null;
@@ -176,16 +186,66 @@ function loadState() {
     return {
       ...clone(defaultState),
       ...parsed,
-      setup: { ...defaultState.setup, ...(parsed.setup || {}) },
+      setup: normalizeSetup(parsed.setup),
       sync: normalizeSync(parsed.sync),
       players: Array.isArray(parsed.players) ? normalizePlayers(parsed.players) : normalizePlayers(clone(defaultState.players)),
-      matches: parsed.matches || [],
+      matches: Array.isArray(parsed.matches) ? parsed.matches.filter(isClassicMatch) : [],
       activeGame: parsed.activeGame || null,
       message: parsed.message || ""
     };
   } catch {
     return clone(defaultState);
   }
+}
+
+function normalizeSetup(setup = {}) {
+  const result = { ...defaultState.setup, ...setup };
+  result.mode = result.mode === "restjagd" ? "restjagd" : "classic";
+  result.startScore = Number(result.startScore) === 301 ? 301 : 501;
+  result.checkout = result.checkout === "double" ? "double" : "straight";
+  result.selectedPlayerIds = Array.isArray(result.selectedPlayerIds) ? result.selectedPlayerIds : [];
+  return result;
+}
+
+function getSetupMode() {
+  const id = state.setup.mode === "restjagd" ? "restjagd" : `classic-${state.setup.startScore}`;
+  return gameModes.find((mode) => mode.id === id) || gameModes[1];
+}
+
+function isRestjagd(game) {
+  return Boolean(game && game.mode === "restjagd");
+}
+
+function isClassicMatch(match) {
+  return Boolean(match && (!match.mode || match.mode === "classic"));
+}
+
+function getClassicMatches() {
+  return (state.matches || []).filter(isClassicMatch);
+}
+
+function getGameRemaining(game) {
+  return isRestjagd(game) ? game.sharedRemaining : game.players[game.currentIndex].remaining;
+}
+
+// Stop at the first checkout or bust: later darts cannot undo a terminal result.
+function evaluateTurn(game, darts = game.currentThrows || []) {
+  let remaining = getGameRemaining(game);
+  let score = 0;
+  let bust = false;
+  let finished = false;
+  const usedDarts = [];
+  for (const dart of darts.slice(0, 3)) {
+    usedDarts.push(dart);
+    score += Number(dart.value);
+    remaining -= Number(dart.value);
+    const doubleFinish = dart.type === "double" || dart.type === "bullseye";
+    bust = remaining < 0 || (game.checkout === "double"
+      && (remaining === 1 || (remaining === 0 && !doubleFinish)));
+    finished = remaining === 0 && !bust;
+    if (bust || finished) break;
+  }
+  return { remaining, score, bust, finished, usedDarts, terminal: bust || finished || usedDarts.length === 3 };
 }
 
 function normalizeSync(sync) {
@@ -226,7 +286,7 @@ function normalizeAvatar(avatar, fallbackColor) {
 
 function saveState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, matches: getClassicMatches() }));
   } catch {
     state.message = "Speicher ist voll. Bitte alte Browserdaten pruefen.";
   }
@@ -302,6 +362,7 @@ function render() {
       </div>
     </div>
   `;
+  syncModePickerUI();
 }
 
 function renderMainContent() {
@@ -314,6 +375,7 @@ function renderMainContent() {
 function renderOverlays() {
   return `
     ${welcomeOpen ? renderWelcomePopup() : ""}
+    ${modePickerOpen ? renderModePicker() : ""}
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
@@ -331,6 +393,7 @@ function renderMainOnly() {
   main.innerHTML = renderMainContent();
   const overlayRoot = app.querySelector("#overlay-root");
   if (overlayRoot) overlayRoot.innerHTML = renderOverlays();
+  syncModePickerUI();
 }
 
 function renderInstallButton() {
@@ -414,29 +477,33 @@ function tabButton(view, label) {
 function renderGameView() {
   if (state.activeGame) return renderActiveGame();
   const playerCount = state.setup.selectedPlayerIds.length + guestPlayers.length;
+  const mode = getSetupMode();
+  const checkout = mode.fixedCheckout || state.setup.checkout;
 
   return `
     <section class="grid two-col">
       <div class="panel panel-pad">
         <div class="section-title">
           <h2>Neues Spiel</h2>
-          <span class="small-pill">${state.setup.startScore}</span>
+          <span class="small-pill">${mode.category === "dartmix" ? "DartMix" : "Klassisch"}</span>
         </div>
         <div class="grid">
           <div>
-            <p class="hint">Modus</p>
-            <div class="segmented" role="group" aria-label="Spielmodus">
-              <button class="choice ${state.setup.startScore === 301 ? "active" : ""}" data-action="set-mode" data-score="301">301<span>kurz</span></button>
-              <button class="choice ${state.setup.startScore === 501 ? "active" : ""}" data-action="set-mode" data-score="501">501<span>klassisch</span></button>
-            </div>
+            <button class="mode-button" data-action="open-mode-picker" aria-haspopup="dialog">
+              <span class="mode-button-mark"><img src="./logo-512.png" alt=""></span>
+              <span class="mode-button-copy"><span class="hint">Modus</span><strong>${mode.name} &middot; ${mode.subtitle}</strong></span>
+              <span class="mode-chevron" aria-hidden="true">&rsaquo;</span>
+            </button>
+            ${mode.kind === "restjagd" ? `<p class="mode-description">Zufallszahl von 2 bis 180. Ein gemeinsamer Rest. Wer auf null kommt, gewinnt. Auch solo spielbar.</p>` : ""}
           </div>
 
           <div>
             <p class="hint">Checkout</p>
             <div class="segmented" role="group" aria-label="Checkout-Regel">
-              <button class="choice ${state.setup.checkout === "straight" ? "active" : ""}" data-action="set-checkout" data-checkout="straight">Einfach<span>genau 0</span></button>
-              <button class="choice ${state.setup.checkout === "double" ? "active" : ""}" data-action="set-checkout" data-checkout="double">Double Out<span>mit Double</span></button>
+              <button class="choice ${checkout === "straight" ? "active" : ""}" data-action="set-checkout" data-checkout="straight" aria-pressed="${checkout === "straight"}" ${mode.fixedCheckout ? "disabled" : ""}>Einfach<span>genau 0</span></button>
+              <button class="choice ${checkout === "double" ? "active" : ""}" data-action="set-checkout" data-checkout="double" aria-pressed="${checkout === "double"}" ${mode.fixedCheckout ? "disabled" : ""}>Double Out<span>Double / Bullseye</span></button>
             </div>
+            ${mode.fixedCheckout ? `<p class="hint">Dieser Modus wird immer mit ${checkout === "double" ? "Double Out" : "Einfach"} gespielt.</p>` : `<p class="hint checkout-hint">${checkout === "double" ? "Genau auf 0. Der letzte Dart muss ein Double oder Bullseye sein." : "Genau auf 0. Jedes Feld darf den Abschluss bringen."}</p>`}
           </div>
 
           <div>
@@ -448,7 +515,7 @@ function renderGameView() {
               ${state.players.map((player) => renderPlayerOption(player)).join("")}
               ${guestPlayers.map((player) => renderGuestOption(player)).join("")}
             </div>
-            ${state.players.length < 2 ? `<p class="footer-note">Lege mindestens zwei Spieler an.</p>` : ""}
+            ${playerCount < mode.minPlayers ? `<p class="footer-note">Waehle mindestens ${mode.minPlayers === 1 ? "einen Spieler" : "zwei Spieler"} oder fuege Gaeste hinzu.</p>` : ""}
           </div>
 
           <form class="form-row compact-form" data-action="add-guest-form">
@@ -456,7 +523,7 @@ function renderGameView() {
             <button class="secondary" type="submit">Gast dazu</button>
           </form>
 
-          <button class="primary" data-action="start-game" ${playerCount < 2 ? "disabled" : ""}>Spiel starten</button>
+          <button class="primary" data-action="start-game" ${playerCount < mode.minPlayers ? "disabled" : ""}>Spiel starten</button>
         </div>
       </div>
 
@@ -464,11 +531,75 @@ function renderGameView() {
         <div class="section-title">
           <h2>Schnellstart</h2>
         </div>
-        <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. Gespeichert werden spaeter nur die festen Spieler.</p>
+        <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. ${mode.kind === "restjagd" ? "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Gespeichert werden spaeter nur die festen Spieler."}</p>
         ${renderSyncPanel()}
       </aside>
     </section>
   `;
+}
+
+function renderModePicker() {
+  return `
+    <div class="modal-backdrop mode-picker-backdrop">
+      <section class="mode-picker" role="dialog" aria-modal="true" aria-labelledby="mode-picker-title">
+        <div class="mode-picker-head">
+          <img src="./header-transparent.png" alt="NobsiBoard">
+          <button class="icon-button" data-action="close-mode-picker" aria-label="Modusauswahl schliessen">X</button>
+        </div>
+        <h2 id="mode-picker-title">Modus waehlen</h2>
+        <div class="mode-tabs" role="tablist" aria-label="Moduskategorien">
+          ${[["classic", "Klassisch"], ["dartmix", "DartMix"]].map(([category, name]) => `
+            <button id="mode-tab-${category}" class="mode-tab ${modePickerCategory === category ? "active" : ""}" role="tab"
+              aria-selected="${modePickerCategory === category}" aria-controls="mode-options" tabindex="${modePickerCategory === category ? 0 : -1}"
+              data-action="mode-category" data-category="${category}">${name}</button>`).join("")}
+        </div>
+        <div id="mode-options" class="mode-options" role="tabpanel" aria-labelledby="mode-tab-${modePickerCategory}">
+          ${gameModes.filter((mode) => mode.category === modePickerCategory).map((mode) => `
+            <button class="mode-option ${pendingModeId === mode.id ? "selected" : ""}" data-action="pick-mode" data-mode-id="${mode.id}" aria-pressed="${pendingModeId === mode.id}">
+              <span class="mode-option-heading"><strong>${mode.name}</strong><span>${mode.subtitle}</span><span class="mode-check" aria-hidden="true">${pendingModeId === mode.id ? "&#10003;" : ""}</span></span>
+              <span class="mode-option-description">${mode.kind === "restjagd" ? "Eine Zufallszahl. Ein Zaehler. Wer auf null kommt, gewinnt." : `Jeder spielt seinen eigenen Rest von ${mode.startScore} auf null.`}</span>
+              ${mode.kind === "restjagd" ? '<span class="mode-option-detail">2–180 Punkte &middot; ab 1 Spieler &middot; ohne Statistik</span>' : ""}
+            </button>`).join("")}
+        </div>
+        <button class="primary" data-action="apply-mode">Uebernehmen</button>
+      </section>
+    </div>`;
+}
+
+function syncModePickerUI() {
+  document.body.classList.toggle("mode-picker-open", modePickerOpen);
+  const picker = app.querySelector(".mode-picker");
+  if (picker && !picker.contains(document.activeElement)) picker.querySelector('[aria-selected="true"]').focus();
+}
+
+function refreshModePicker(focusSelector) {
+  const overlay = app.querySelector("#overlay-root");
+  if (overlay) overlay.innerHTML = renderOverlays();
+  syncModePickerUI();
+  if (focusSelector) app.querySelector(focusSelector)?.focus();
+}
+
+function openModePicker() {
+  if (state.activeGame) return;
+  const mode = getSetupMode();
+  pendingModeId = mode.id;
+  modePickerCategory = mode.category;
+  modePickerOpen = true;
+  refreshModePicker();
+}
+
+function closeModePicker(apply = false) {
+  if (apply) {
+    const mode = gameModes.find((item) => item.id === pendingModeId);
+    if (mode) {
+      state.setup.mode = mode.kind;
+      if (mode.startScore) state.setup.startScore = mode.startScore;
+      if (mode.fixedCheckout) state.setup.checkout = mode.fixedCheckout;
+    }
+  }
+  modePickerOpen = false;
+  saveAndRenderMain();
+  app.querySelector('[data-action="open-mode-picker"]')?.focus();
 }
 
 function renderSyncPanel() {
@@ -546,19 +677,17 @@ function renderActiveGame() {
   const isFinished = Boolean(game.finishedAt);
   const throws = game.currentThrows || [];
   const roundTotal = throws.reduce((sum, dart) => sum + dart.value, 0);
-  const projectedRemaining = current.remaining - roundTotal;
-  const lastDart = throws[throws.length - 1];
-  const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
-  const projectedBust = throws.length > 0 && (projectedRemaining < 0
-    || (game.checkout === "double" && (projectedRemaining === 1 || (projectedRemaining === 0 && !isDoubleFinish))));
-  const canAddThrow = throws.length < 3;
+  const projection = evaluateTurn(game);
+  const projectedRemaining = projection.remaining;
+  const projectedBust = projection.bust;
+  const canAddThrow = !projection.terminal;
 
   return `
     <section class="game-board">
       ${isFinished ? renderWinner(game) : ""}
-      <div class="scorecards">
+      ${isRestjagd(game) ? renderSharedScore(game) : `<div class="scorecards">
         ${game.players.map((player, index) => renderScoreCard(player, index === game.currentIndex && !isFinished)).join("")}
-      </div>
+      </div>`}
 
       ${!isFinished ? `
         <div class="turn-panel">
@@ -568,7 +697,7 @@ function renderActiveGame() {
               <div class="turn-player">${escapeHtml(current.name)}</div>
             </div>
             <div class="turn-rules">
-              <span class="small-pill">${game.startScore}</span>
+              <span class="small-pill">${isRestjagd(game) ? `Restjagd · Start ${game.startScore}` : game.startScore}</span>
               <span class="small-pill">${game.checkout === "double" ? "Double Out" : "Einfach"}</span>
             </div>
           </div>
@@ -616,7 +745,7 @@ function renderActiveGame() {
           </div>
 
           <div class="actions">
-            <button class="primary ${projectedBust ? "bust-action" : ""}" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>${projectedBust ? "BUST!" : "Runde speichern"}</button>
+            <button class="primary ${projectedBust ? "bust-action" : ""}" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>${projectedBust ? "BUST!" : projection.finished ? "Checkout bestaetigen" : "Runde speichern"}</button>
             <button class="secondary" data-action="remove-last-dart" ${throws.length === 0 ? "disabled" : ""}>Wurf zurueck</button>
             <button class="secondary" data-action="undo" ${game.history.length === 0 ? "disabled" : ""}>Runde zurueck</button>
             <button class="ghost" data-action="clear-throws">Runde leeren</button>
@@ -628,6 +757,21 @@ function renderActiveGame() {
       ${state.message ? `<div class="message">${escapeHtml(state.message)}</div>` : ""}
     </section>
   `;
+}
+
+function renderSharedScore(game) {
+  return `
+    <section class="shared-score" aria-label="Gemeinsamer Rest">
+      <div class="shared-score-head"><span class="small-pill">Restjagd</span><span class="hint">Start ${game.startScore} &middot; ${game.checkout === "double" ? "Double Out" : "Einfach"}</span></div>
+      <p class="hint">Gemeinsamer Rest</p>
+      <div class="remaining">${game.sharedRemaining}</div>
+      <div class="shared-players" aria-label="Spielreihenfolge">
+        ${game.players.map((player, index) => `<div class="shared-player ${index === game.currentIndex && !game.finishedAt ? "active" : ""}">
+          ${renderAvatar(player, "tiny")}<strong>${escapeHtml(player.name)}</strong>
+          ${index === game.currentIndex && !game.finishedAt ? '<span class="turn-badge">DRAN</span>' : ""}
+        </div>`).join("")}
+      </div>
+    </section>`;
 }
 
 function renderDartButton(value, label, type, enabled) {
@@ -661,8 +805,11 @@ function renderWinner(game) {
         ${winner ? renderAvatar(winner, "small", "winner") : ""}
         <h2>${escapeHtml(winner ? winner.name : "Gewinner")} gewinnt!</h2>
       </div>
-      <p>Das Spiel wurde gespeichert und ist jetzt in der Statistik.</p>
-      <button class="primary" data-action="new-game">Neues Spiel</button>
+      <p>${isRestjagd(game) ? (game.players.length === 1 ? `Geschafft mit ${game.dartsThrown} Darts. ` : "") + "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Das Spiel wurde gespeichert und ist jetzt in der Statistik."}</p>
+      <div class="actions">
+        ${isRestjagd(game) ? '<button class="primary" data-action="restjagd-rematch">Noch eine Runde</button>' : ""}
+        <button class="${isRestjagd(game) ? "secondary" : "primary"}" data-action="new-game">Neues Spiel</button>
+      </div>
     </div>
   `;
 }
@@ -670,7 +817,7 @@ function renderWinner(game) {
 function renderStatsView() {
   const stats = getStats();
   const ranked = [...stats.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || b.average - a.average);
-  const recent = [...state.matches].slice(-6).reverse();
+  const recent = [...getClassicMatches()].slice(-6).reverse();
 
   if (activeStatsPlayerId) {
     const detail = stats.get(activeStatsPlayerId);
@@ -683,7 +830,7 @@ function renderStatsView() {
       <div class="panel panel-pad">
         <div class="section-title">
           <h2>Globale Statistik</h2>
-          <span class="small-pill">${state.matches.length} Spiele</span>
+          <span class="small-pill">${getClassicMatches().length} Spiele</span>
         </div>
         <div class="table">
           ${ranked.length ? ranked.map((row, index) => renderRankRow(row, index)).join("") : `<div class="empty">Noch keine gespeicherten Spiele.</div>`}
@@ -736,7 +883,7 @@ function renderRankRow(row, index) {
 }
 
 function renderPlayerStatsView(row) {
-  const playerMatches = [...state.matches]
+  const playerMatches = [...getClassicMatches()]
     .filter((match) => match.players.some((player) => player.id === row.id))
     .slice(-6)
     .reverse();
@@ -871,7 +1018,7 @@ function renderBestStats(ranked) {
     .map((row) => ({ name: row.name, count: Number((row.dartCounts || {})["T20"] || 0) }))
     .filter((row) => row.count > 0)
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))[0];
-  const played = state.matches.length;
+  const played = getClassicMatches().length;
 
   return `
     <div class="stats-grid">
@@ -892,7 +1039,7 @@ function renderBestStats(ranked) {
 
 function getGlobalFeaturedCounts() {
   const counts = Object.fromEntries(globalTrackedDarts.map((dart) => [dart.label, 0]));
-  state.matches.forEach((match) => {
+  getClassicMatches().forEach((match) => {
     (match.players || []).forEach((player) => {
       globalTrackedDarts.forEach((dart) => {
         counts[dart.label] += Number((player.dartCounts || {})[dart.label] || 0);
@@ -965,7 +1112,7 @@ function renderHistoryRow(match) {
 }
 
 function renderMatchDetails() {
-  const match = state.matches.find((item) => item.id === activeMatchId);
+  const match = getClassicMatches().find((item) => item.id === activeMatchId);
   if (!match) return "";
   const hasDetails = match.players.some((player) => Array.isArray(player.roundDetails) && player.roundDetails.length);
   const date = new Date(match.finishedAt).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -1216,7 +1363,7 @@ function getStats() {
     });
   });
 
-  state.matches.forEach((match) => {
+  getClassicMatches().forEach((match) => {
     match.players.forEach((snapshot) => {
       const row = stats.get(snapshot.id);
       if (!row) return;
@@ -1355,6 +1502,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
     players: [],
     matches: [],
     setup: {
+      mode: "classic",
       startScore: 501,
       checkout: "straight",
       selectedPlayerIds: []
@@ -1373,6 +1521,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
   guestPlayers = [];
   avatarEditorPlayerId = null;
   activeStatsPlayerId = null;
+  modePickerOpen = false;
 }
 
 function queueSync() {
@@ -1656,8 +1805,8 @@ function mergeRemotePlayers(remotePlayers) {
 }
 
 function mergeRemoteMatches(remoteMatches) {
-  const byId = new Map((state.matches || []).map((match) => [match.id, normalizeLocalMatch(match)]));
-  remoteMatches.forEach((remoteMatch) => {
+  const byId = new Map(getClassicMatches().map((match) => [match.id, normalizeLocalMatch(match)]));
+  remoteMatches.filter(isClassicMatch).forEach((remoteMatch) => {
     const localMatch = byId.get(remoteMatch.id);
     if (!localMatch || getTime(remoteMatch.finishedAt || remoteMatch.createdAt) > getTime(localMatch.finishedAt || localMatch.createdAt)) {
       byId.set(remoteMatch.id, remoteMatch);
@@ -1730,7 +1879,7 @@ async function pushLocalData(familyRef) {
   const playerWrites = normalizePlayers(state.players).map((player) => (
     familyRef.collection("players").doc(player.id).set(preparePlayerForRemote(player), { merge: true })
   ));
-  const matchWrites = (state.matches || []).map((match) => {
+  const matchWrites = getClassicMatches().map((match) => {
     const normalized = normalizeLocalMatch(match);
     return familyRef.collection("matches").doc(normalized.id).set(prepareMatchForRemote(normalized), { merge: true });
   });
@@ -1813,9 +1962,14 @@ function normalizeLocalMatch(match) {
 
 function normalizeRemoteActiveGame(data) {
   const base = normalizeRemoteMatch(data && data.id ? data.id : "active", data);
-  if (!base) return null;
+  if (!base || !base.players.length) return null;
   return {
     ...base,
+    finishedAt: normalizeDateValue(data.finishedAt) || null,
+    startingIndex: Math.max(0, Math.min(Number(data.startingIndex || 0), base.players.length - 1)),
+    sharedRemaining: Number(data.sharedRemaining ?? base.startScore),
+    dartsThrown: Number(data.dartsThrown || 0),
+    lastSavedRound: Array.isArray(data.lastSavedRound) ? data.lastSavedRound : [],
     currentIndex: Math.max(0, Math.min(Number(data.currentIndex || 0), base.players.length - 1)),
     currentThrows: Array.isArray(data.currentThrows)
       ? data.currentThrows.map((dart) => ({
@@ -1836,6 +1990,7 @@ function normalizeRemoteMatch(id, data) {
   if (!data || !id || !Array.isArray(data.players)) return null;
   return {
     id,
+    mode: String(data.mode || "classic"),
     startScore: Number(data.startScore || 501),
     createdAt: data.createdAt || data.finishedAt || new Date().toISOString(),
     finishedAt: data.finishedAt || data.createdAt || new Date().toISOString(),
@@ -1885,8 +2040,10 @@ function preparePlayerForRemote(player) {
 }
 
 function prepareMatchForRemote(match) {
+  if (!isClassicMatch(match)) throw new Error("DartMix darf nicht als Statistik gespeichert werden.");
   return {
     id: match.id,
+    mode: "classic",
     startScore: match.startScore,
     createdAt: match.createdAt,
     finishedAt: match.finishedAt,
@@ -1899,6 +2056,11 @@ function prepareMatchForRemote(match) {
 function prepareActiveGameForRemote(game) {
   return {
     id: game.id,
+    mode: game.mode || "classic",
+    sharedRemaining: isRestjagd(game) ? game.sharedRemaining : null,
+    startingIndex: game.startingIndex || 0,
+    dartsThrown: game.dartsThrown || 0,
+    lastSavedRound: game.lastSavedRound || [],
     startScore: game.startScore,
     createdAt: game.createdAt,
     finishedAt: game.finishedAt || null,
@@ -1923,36 +2085,34 @@ function getTime(value) {
   return Number.isFinite(time) ? time : 0;
 }
 
-function startGame() {
-  const playerCount = state.setup.selectedPlayerIds.length + guestPlayers.length;
-  if (playerCount < 2) return;
-  const selected = state.setup.selectedPlayerIds
-    .map((id) => state.players.find((player) => player.id === id))
-    .filter(Boolean);
-  const allPlayers = [...selected, ...guestPlayers];
-  if (allPlayers.length < 2) return;
-
-  state.activeGame = {
+function createGame(players, setup, startingIndex = 0, revision = 0) {
+  const restjagd = setup.mode === "restjagd";
+  const startScore = restjagd ? Math.floor(Math.random() * 179) + 2 : setup.startScore;
+  return {
     id: createId(),
-    startScore: state.setup.startScore,
-    checkout: state.setup.checkout || "straight",
-    currentIndex: 0,
+    mode: restjagd ? "restjagd" : "classic",
+    startScore,
+    sharedRemaining: restjagd ? startScore : null,
+    dartsThrown: 0,
+    checkout: setup.checkout === "double" ? "double" : "straight",
+    startingIndex,
+    currentIndex: startingIndex,
     currentThrows: [],
     history: [],
-    revision: 0,
+    revision,
     updatedAt: new Date().toISOString(),
     deviceId: DEVICE_ID,
     lastReaction: null,
     createdAt: new Date().toISOString(),
     finishedAt: null,
     winnerId: null,
-    players: allPlayers.map((player) => ({
+    players: players.map((player) => ({
       id: player.id,
       name: player.name,
       color: player.color,
       avatar: normalizeAvatar(player.avatar, player.color),
       guest: Boolean(player.guest),
-      remaining: state.setup.startScore,
+      remaining: restjagd ? 0 : startScore,
       rounds: 0,
       throwsTotal: 0,
       highestThrow: 0,
@@ -1963,96 +2123,100 @@ function startGame() {
       roundDetails: []
     }))
   };
+}
+
+function startGame() {
+  if (state.activeGame) return;
+  const mode = getSetupMode();
+  const selected = state.setup.selectedPlayerIds.map((id) => state.players.find((player) => player.id === id)).filter(Boolean);
+  const allPlayers = [...selected, ...guestPlayers];
+  if (allPlayers.length < mode.minPlayers) return;
+  state.activeGame = createGame(allPlayers, { ...state.setup, checkout: mode.fixedCheckout || state.setup.checkout });
   guestPlayers = [];
   state.message = "";
   saveAndRender();
   queueActiveGameSync(-1);
 }
 
+function startRestjagdRematch() {
+  const game = state.activeGame;
+  if (!isRestjagd(game) || !game.finishedAt || !game.players.length) return;
+  const expectedRevision = Number(game.revision || 0);
+  const startingIndex = ((game.startingIndex || 0) + 1) % game.players.length;
+  state.activeGame = createGame(game.players, game, startingIndex, expectedRevision + 1);
+  state.message = "";
+  saveAndRenderMain();
+  scrollToActiveScore();
+  queueActiveGameSync(expectedRevision);
+}
+
 function submitRound() {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
   const expectedRevision = Number(game.revision || 0);
-  let finishedMatch = false;
-  const throws = game.currentThrows || [];
-  if (throws.length === 0) {
+  const turn = evaluateTurn(game);
+  const throws = turn.usedDarts;
+  if (!throws.length) {
     state.message = "Bitte erst mindestens einen Dart auswaehlen.";
     renderMainOnly();
     return;
   }
-  const score = throws.reduce((sum, dart) => sum + dart.value, 0);
-
   const player = game.players[game.currentIndex];
-  const before = createUndoSnapshot(game);
-  const nextRemaining = player.remaining - score;
-  const lastDart = throws[throws.length - 1];
-  const isDoubleFinish = lastDart && (lastDart.type === "double" || lastDart.type === "bullseye");
-
-  game.history.push(before);
-
-  const invalidDoubleOut = game.checkout === "double" && (nextRemaining === 1 || (nextRemaining === 0 && !isDoubleFinish));
-
-  if (nextRemaining < 0 || invalidDoubleOut) {
+  game.history.push(createUndoSnapshot(game));
+  if (isRestjagd(game)) game.dartsThrown += throws.length;
+  if (turn.bust) {
     game.lastReaction = { playerId: player.id, type: "bust" };
-    state.message = invalidDoubleOut
-      ? `Double Out: ${player.name} braucht ein passendes Double.`
-      : `${player.name} ist ueberworfen. Runde zaehlt als 0.`;
+    state.message = `${player.name}: Bust! Der Rest bleibt bei ${getGameRemaining(game)}.`;
   } else {
-    player.rounds += 1;
-    recordDartDetails(player, throws);
-    player.remaining = nextRemaining;
-    player.throwsTotal += score;
-    player.highestThrow = Math.max(player.highestThrow, score);
-    player.roundScores.push(score);
-    player.roundDetails.push({
-      darts: clone(throws),
-      score,
-      bust: false
-    });
-    game.lastReaction = score >= 100 ? { playerId: player.id, type: "big" } : null;
-    state.message = score === 180 ? "180! Sehr stark." : "";
+    if (isRestjagd(game)) {
+      game.sharedRemaining = turn.remaining;
+    } else {
+      player.rounds += 1;
+      recordDartDetails(player, throws);
+      player.remaining = turn.remaining;
+      player.throwsTotal += turn.score;
+      player.highestThrow = Math.max(player.highestThrow, turn.score);
+      player.roundScores.push(turn.score);
+      player.roundDetails.push({ darts: clone(throws), score: turn.score, bust: false });
+    }
+    game.lastReaction = turn.score >= 100 ? { playerId: player.id, type: "big" } : null;
+    state.message = turn.score === 180 ? "180! Sehr stark." : "";
   }
-
   game.currentThrows = [];
-
   game.lastSavedRound = clone(throws);
-
-  if (player.remaining === 0) {
+  if (turn.finished) {
     game.finishedAt = new Date().toISOString();
     game.winnerId = player.id;
     game.lastReaction = { playerId: player.id, type: "winner" };
-    state.matches.push({
-      id: game.id,
-      startScore: game.startScore,
-      createdAt: game.createdAt,
-      finishedAt: game.finishedAt,
-      checkout: game.checkout,
-      winnerId: game.winnerId,
-      players: game.players.map((snapshot) => ({ ...snapshot }))
-    });
+    if (!isRestjagd(game)) {
+      state.matches.push({
+        id: game.id, mode: "classic", startScore: game.startScore,
+        createdAt: game.createdAt, finishedAt: game.finishedAt,
+        checkout: game.checkout, winnerId: game.winnerId,
+        players: game.players.map((snapshot) => ({ ...snapshot }))
+      });
+    }
     state.message = "";
-    finishedMatch = true;
   } else {
     game.currentIndex = (game.currentIndex + 1) % game.players.length;
   }
-
   game.revision = expectedRevision + 1;
   game.updatedAt = new Date().toISOString();
   game.deviceId = DEVICE_ID;
-
   saveAndRenderMain();
   scrollToActiveScore();
-  if (finishedMatch) {
+  if (turn.finished && !isRestjagd(game)) {
     clearRemoteActiveGame(game.revision);
     queueSync();
   } else {
+    // DartMix keeps only the current game, so other devices can show its winner too.
     queueActiveGameSync(expectedRevision);
   }
 }
 
 function scrollToActiveScore() {
   window.requestAnimationFrame(() => {
-    const remaining = document.querySelector(".scorecard.active .remaining");
+    const remaining = document.querySelector(".shared-score .remaining, .scorecard.active .remaining");
     if (!remaining) return;
     remaining.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
   });
@@ -2060,7 +2224,7 @@ function scrollToActiveScore() {
 
 function undo() {
   const game = state.activeGame;
-  if (!game || !game.history.length) return;
+  if (!game || game.finishedAt || !game.history.length) return;
   const expectedRevision = Number(game.revision || 0);
   const previous = game.history.pop();
   state.activeGame = {
@@ -2085,10 +2249,10 @@ function addDart(value, label, type) {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
   if (!game.currentThrows) game.currentThrows = [];
-  if (game.currentThrows.length >= 3) return;
+  if (evaluateTurn(game).terminal) return;
   game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
-  renderMainOnly();
+  saveAndRenderMain();
   // The original button was replaced by renderMainOnly; animate the new one.
   const pressedButton = [...app.querySelectorAll('[data-action="add-dart"]')]
     .find((button) => button.dataset.label === label && button.dataset.type === type);
@@ -2098,9 +2262,9 @@ function addDart(value, label, type) {
       pressedButton.classList.remove("dart-feedback");
     }, { once: true });
   }
-  if (game.currentThrows.length === 3) {
+  if (evaluateTurn(game).terminal) {
     // Let the confirmation show before scrolling the keypad out of view.
-    const confirmedDart = game.currentThrows[2];
+    const confirmedDart = game.currentThrows[game.currentThrows.length - 1];
     window.setTimeout(() => scrollToSubmitRound(game, confirmedDart), 300);
   }
 }
@@ -2108,7 +2272,7 @@ function addDart(value, label, type) {
 function scrollToSubmitRound(game, confirmedDart) {
   window.requestAnimationFrame(() => {
     if (state.activeView !== "game" || state.activeGame !== game
-      || game.currentThrows.length !== 3 || game.currentThrows[2] !== confirmedDart) return;
+      || !evaluateTurn(game).terminal || game.currentThrows[game.currentThrows.length - 1] !== confirmedDart) return;
     const submitButton = document.querySelector('[data-action="submit-round"]');
     if (!submitButton) return;
     submitButton.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
@@ -2136,15 +2300,15 @@ function recordDartDetails(player, throws) {
 
 function removeLastDart() {
   const game = state.activeGame;
-  if (!game || !game.currentThrows || game.currentThrows.length === 0) return;
+  if (!game || game.finishedAt || !game.currentThrows || game.currentThrows.length === 0) return;
   game.currentThrows.pop();
-  renderMainOnly();
+  saveAndRenderMain();
 }
 
 function clearThrows() {
-  if (!state.activeGame) return;
+  if (!state.activeGame || state.activeGame.finishedAt) return;
   state.activeGame.currentThrows = [];
-  renderMainOnly();
+  saveAndRenderMain();
 }
 
 function togglePlayer(id) {
@@ -2359,7 +2523,7 @@ function escapeHtml(value) {
 
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
-  if (!button) return;
+  if (!button || button.disabled) return;
   const action = button.dataset.action;
 
   if (action === "set-view") {
@@ -2368,14 +2532,22 @@ document.addEventListener("click", (event) => {
     state.message = "";
     saveAndRender();
   }
-  if (action === "set-mode") {
-    state.setup.startScore = Number(button.dataset.score);
+  if (action === "open-mode-picker") openModePicker();
+  if (action === "close-mode-picker") closeModePicker();
+  if (action === "apply-mode") closeModePicker(true);
+  if (action === "mode-category") {
+    modePickerCategory = button.dataset.category;
+    refreshModePicker(`#mode-tab-${modePickerCategory}`);
+  }
+  if (action === "pick-mode") {
+    pendingModeId = button.dataset.modeId;
+    refreshModePicker(`[data-mode-id="${pendingModeId}"]`);
+  }
+  if (action === "set-checkout" && !state.activeGame && !getSetupMode().fixedCheckout) {
+    state.setup.checkout = button.dataset.checkout === "double" ? "double" : "straight";
     saveAndRender();
   }
-  if (action === "set-checkout") {
-    state.setup.checkout = button.dataset.checkout;
-    saveAndRender();
-  }
+  if (action === "restjagd-rematch") startRestjagdRematch();
   if (action === "toggle-player") togglePlayer(button.dataset.playerId);
   if (action === "remove-guest") removeGuest(button.dataset.playerId);
   if (action === "start-game") startGame();
@@ -2454,7 +2626,25 @@ document.addEventListener("submit", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && state.activeGame && state.activeView === "game") {
+  if (modePickerOpen) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeModePicker();
+    } else if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && event.target.matches('[role="tab"]')) {
+      event.preventDefault();
+      modePickerCategory = modePickerCategory === "classic" ? "dartmix" : "classic";
+      refreshModePicker(`#mode-tab-${modePickerCategory}`);
+    } else if (event.key === "Tab") {
+      const controls = [...app.querySelectorAll('.mode-picker button:not([disabled]):not([tabindex="-1"])')];
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    return;
+  }
+  if (event.key === "Enter" && state.activeGame && state.activeView === "game"
+    && !event.target.closest("button, input, textarea, select") && !app.querySelector('[role="dialog"]')) {
     event.preventDefault();
     submitRound();
   }

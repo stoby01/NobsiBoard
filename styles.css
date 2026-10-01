@@ -2171,3 +2171,64 @@ button:disabled {
     justify-self: start;
   }
 }
+
+/* Mode selection and the shared Restjagd scoreboard. */
+.mode-button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #dc2626;
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.mode-button-mark { width: 60px; height: 52px; flex-shrink: 0; background: white; border-radius: 6px; overflow: hidden; }
+.mode-button-mark img { width: 100%; height: 100%; object-fit: contain; }
+.mode-button-copy { display: grid; gap: 3px; min-width: 0; }
+.mode-button-copy strong { font-size: 1.12rem; overflow-wrap: anywhere; }
+.mode-chevron { margin-left: auto; font-size: 2rem; color: #dc2626; }
+.mode-description, .checkout-hint { margin-top: 8px; line-height: 1.5; color: var(--muted); }
+body.mode-picker-open { overflow: hidden; }
+.mode-picker-backdrop { place-items: center; }
+.mode-picker { width: min(100%, 520px); max-height: min(90dvh, 720px); overflow-y: auto; display: grid; gap: 16px; padding: 20px; background: white; border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.mode-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.mode-picker-head img { width: min(70%, 260px); height: auto; }
+.mode-picker-head .icon-button { flex-shrink: 0; }
+.mode-picker h2 { text-align: center; }
+.mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 5px; border-radius: 8px; background: #f1f5f9; }
+.mode-tab { min-height: 46px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 850; cursor: pointer; }
+.mode-tab.active { background: var(--ink); color: white; }
+.mode-options { display: grid; gap: 10px; }
+.mode-option { display: grid; gap: 10px; padding: 16px; border: 2px solid var(--line); border-radius: 8px; background: white; color: var(--ink); text-align: left; cursor: pointer; }
+.mode-option.selected { border-color: #dc2626; background: #fff7f7; }
+.mode-option-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.mode-option-heading strong { font-size: 1.4rem; }
+.mode-option-heading > span { color: var(--muted); }
+.mode-option-heading .mode-check { margin-left: auto; color: #b91c1c; font-weight: 900; }
+.mode-option-description { line-height: 1.5; }
+.mode-option-detail { font-size: 0.85rem; line-height: 1.5; color: var(--muted); }
+.mode-button:focus-visible, .mode-tab:focus-visible, .mode-option:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.shared-score { display: grid; gap: 10px; padding: 18px; border: 2px solid var(--ink); border-radius: 8px; background: white; }
+.shared-score-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.shared-score > .hint, .shared-score > .remaining { text-align: center; }
+.shared-score > .remaining { font-size: 4.5rem; }
+.shared-players { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+.shared-player { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; max-width: 100%; padding: 8px 10px; border: 2px solid transparent; border-radius: 8px; background: var(--paper); }
+.shared-player strong { overflow-wrap: anywhere; min-width: 0; }
+.shared-player.active { border-color: var(--gold); background: #fffbeb; }
+.shared-player .turn-badge { min-height: 24px; font-size: 0.7rem; padding: 3px 6px; }
+@media (max-width: 760px) {
+  .mode-picker-backdrop { place-items: end center; padding: 10px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .mode-picker { padding: 16px; max-height: 88dvh; gap: 12px; }
+}
+@media (max-width: 430px) {
+  .mode-button { gap: 8px; padding: 10px; }
+  .mode-button-mark { width: 48px; height: 44px; }
+  .mode-button-copy strong { font-size: 1rem; }
+  .shared-score { padding: 12px; }
+}
