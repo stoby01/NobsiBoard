@@ -634,9 +634,6 @@ function updateRestjagdIntroNumber() {
   const number = app.querySelector(".restjagd-intro-number");
   if (!number) return;
   number.textContent = restjagdIntro.displayNumber;
-  number.classList.remove("tick");
-  void number.offsetWidth;
-  number.classList.add("tick");
 }
 
 function settleRestjagdIntro(autoCloseDelay = 850) {
