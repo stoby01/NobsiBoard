@@ -87,6 +87,9 @@ let welcomeOpen = !state.welcomeSeen;
 let modePickerOpen = false;
 let modePickerCategory = "classic";
 let pendingModeId = "";
+let restjagdIntro = null;
+let restjagdIntroTimers = [];
+let restjagdIntroRunId = 0;
 let updateReady = false;
 let updateApplying = false;
 let updateWorker = null;
@@ -376,6 +379,7 @@ function renderOverlays() {
   return `
     ${welcomeOpen ? renderWelcomePopup() : ""}
     ${modePickerOpen ? renderModePicker() : ""}
+    ${isRestjagdIntroVisible() ? renderRestjagdIntro() : ""}
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
@@ -568,8 +572,128 @@ function renderModePicker() {
 
 function syncModePickerUI() {
   document.body.classList.toggle("mode-picker-open", modePickerOpen);
+  document.body.classList.toggle("restjagd-intro-open", isRestjagdIntroVisible());
   const picker = app.querySelector(".mode-picker");
   if (picker && !picker.contains(document.activeElement)) picker.querySelector('[aria-selected="true"]').focus();
+}
+
+function isRestjagdIntroVisible() {
+  return Boolean(restjagdIntro && state.activeGame && isRestjagd(state.activeGame)
+    && restjagdIntro.gameId === state.activeGame.id);
+}
+
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+}
+
+function renderRestjagdIntro() {
+  const finalNumber = Number(state.activeGame.startScore);
+  const number = restjagdIntro.settled ? finalNumber : restjagdIntro.displayNumber;
+  return `
+    <div class="restjagd-intro-backdrop" data-action="skip-restjagd-intro">
+      <section class="restjagd-intro-card ${restjagdIntro.settled ? "settled" : "rolling"}" role="dialog" aria-modal="true" aria-labelledby="restjagd-intro-title" aria-describedby="restjagd-intro-caption">
+        <p class="restjagd-intro-kicker">DartMix</p>
+        <h2 id="restjagd-intro-title">RESTJAGD</h2>
+        <div class="restjagd-intro-number" aria-hidden="true">${escapeHtml(number)}</div>
+        <p id="restjagd-intro-caption" class="restjagd-intro-caption" aria-live="polite">${restjagdIntro.settled ? "Euer gemeinsamer Rest" : "Euer Rest wird ausgelost ..."}</p>
+        <button class="restjagd-intro-skip" data-action="skip-restjagd-intro">${restjagdIntro.settled ? "Los geht's" : "Antippen zum &Uuml;berspringen"}</button>
+      </section>
+    </div>`;
+}
+
+function renderOverlayRoot() {
+  const overlay = app.querySelector("#overlay-root");
+  if (overlay) overlay.innerHTML = renderOverlays();
+  syncModePickerUI();
+}
+
+function clearRestjagdIntroTimers() {
+  restjagdIntroTimers.forEach((timer) => window.clearTimeout(timer));
+  restjagdIntroTimers = [];
+}
+
+function scheduleRestjagdIntro(callback, delay, runId = restjagdIntroRunId) {
+  const timer = window.setTimeout(() => {
+    restjagdIntroTimers = restjagdIntroTimers.filter((entry) => entry !== timer);
+    if (runId === restjagdIntroRunId) callback();
+  }, delay);
+  restjagdIntroTimers.push(timer);
+}
+
+function randomRestjagdPreview(finalNumber) {
+  let preview = finalNumber;
+  for (let attempt = 0; attempt < 6 && preview === finalNumber; attempt += 1) {
+    preview = Math.floor(Math.random() * 179) + 2;
+  }
+  return preview === finalNumber ? (finalNumber === 180 ? 179 : finalNumber + 1) : preview;
+}
+
+function updateRestjagdIntroNumber() {
+  if (!isRestjagdIntroVisible() || restjagdIntro.settled) return;
+  restjagdIntro.displayNumber = randomRestjagdPreview(state.activeGame.startScore);
+  const number = app.querySelector(".restjagd-intro-number");
+  if (!number) return;
+  number.textContent = restjagdIntro.displayNumber;
+  number.classList.remove("tick");
+  void number.offsetWidth;
+  number.classList.add("tick");
+}
+
+function settleRestjagdIntro(autoCloseDelay = 850) {
+  if (!isRestjagdIntroVisible() || restjagdIntro.settled) return;
+  clearRestjagdIntroTimers();
+  restjagdIntro.settled = true;
+  restjagdIntro.displayNumber = state.activeGame.startScore;
+  renderOverlayRoot();
+  scheduleRestjagdIntro(closeRestjagdIntro, autoCloseDelay);
+}
+
+function closeRestjagdIntro() {
+  if (!restjagdIntro) return;
+  clearRestjagdIntroTimers();
+  restjagdIntroRunId += 1;
+  restjagdIntro = null;
+  renderOverlayRoot();
+  scrollToActiveScore();
+}
+
+function skipRestjagdIntro() {
+  if (!isRestjagdIntroVisible()) return;
+  if (restjagdIntro.settled) closeRestjagdIntro();
+  else settleRestjagdIntro(450);
+}
+
+function openRestjagdIntro(game) {
+  if (!isRestjagd(game)) return;
+  clearRestjagdIntroTimers();
+  restjagdIntroRunId += 1;
+  const runId = restjagdIntroRunId;
+  const reducedMotion = prefersReducedMotion();
+  restjagdIntro = {
+    gameId: game.id,
+    displayNumber: reducedMotion ? game.startScore : randomRestjagdPreview(game.startScore),
+    settled: reducedMotion
+  };
+  renderOverlayRoot();
+  app.querySelector(".restjagd-intro-skip")?.focus();
+
+  if (reducedMotion) {
+    scheduleRestjagdIntro(closeRestjagdIntro, 2000, runId);
+    return;
+  }
+
+  const delays = [65, 65, 70, 75, 85, 95, 110, 130, 160, 210, 260];
+  let step = 0;
+  const roll = () => {
+    updateRestjagdIntroNumber();
+    if (step === delays.length - 1) {
+      scheduleRestjagdIntro(() => settleRestjagdIntro(), delays[step], runId);
+      return;
+    }
+    step += 1;
+    scheduleRestjagdIntro(roll, delays[step], runId);
+  };
+  scheduleRestjagdIntro(roll, delays[step], runId);
 }
 
 function refreshModePicker(focusSelector) {
@@ -2135,6 +2259,7 @@ function startGame() {
   guestPlayers = [];
   state.message = "";
   saveAndRender();
+  if (isRestjagd(state.activeGame)) openRestjagdIntro(state.activeGame);
   queueActiveGameSync(-1);
 }
 
@@ -2146,7 +2271,7 @@ function startRestjagdRematch() {
   state.activeGame = createGame(game.players, game, startingIndex, expectedRevision + 1);
   state.message = "";
   saveAndRenderMain();
-  scrollToActiveScore();
+  openRestjagdIntro(state.activeGame);
   queueActiveGameSync(expectedRevision);
 }
 
@@ -2526,6 +2651,7 @@ document.addEventListener("click", (event) => {
   if (!button || button.disabled) return;
   const action = button.dataset.action;
 
+  if (action === "skip-restjagd-intro") skipRestjagdIntro();
   if (action === "set-view") {
     state.activeView = button.dataset.view;
     if (state.activeView !== "stats") activeStatsPlayerId = null;
@@ -2626,6 +2752,13 @@ document.addEventListener("submit", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (isRestjagdIntroVisible()) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      skipRestjagdIntro();
+    }
+    return;
+  }
   if (modePickerOpen) {
     if (event.key === "Escape") {
       event.preventDefault();
