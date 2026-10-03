@@ -48,10 +48,12 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
-const RESTJAGD_REEL_DURATION = 3200;
-const RESTJAGD_REEL_BRAKE_DURATION = 2000;
-const RESTJAGD_REEL_CARD_COUNT = 100;
-const RESTJAGD_REEL_FINAL_INDEX = 96;
+const RESTJAGD_MIN_NUMBER = 2;
+const RESTJAGD_MAX_NUMBER = 180;
+const RESTJAGD_REEL_DURATION = 2800;
+const RESTJAGD_REEL_BRAKE_DURATION = 1800;
+const RESTJAGD_REEL_CARD_COUNT = 87;
+const RESTJAGD_REEL_FINAL_INDEX = 83;
 const RESTJAGD_REEL_SLOWDOWN = "cubic-bezier(.333333, .666667, .666667, 1)";
 
 const defaultState = {
@@ -222,6 +224,10 @@ function getSetupMode() {
 
 function isRestjagd(game) {
   return Boolean(game && game.mode === "restjagd");
+}
+
+function drawRestjagdNumber() {
+  return RESTJAGD_MIN_NUMBER + Math.floor(Math.random() * (RESTJAGD_MAX_NUMBER - RESTJAGD_MIN_NUMBER + 1));
 }
 
 function isClassicMatch(match) {
@@ -708,7 +714,7 @@ function openRestjagdIntro(game) {
   const finalIndex = reducedMotion ? 0 : RESTJAGD_REEL_FINAL_INDEX;
   const numbers = Array.from({ length: reducedMotion ? 1 : RESTJAGD_REEL_CARD_COUNT }, (_, index) => {
     if (index === finalIndex) return game.startScore;
-    return Math.floor(Math.random() * 179) + 2;
+    return drawRestjagdNumber();
   });
   restjagdIntro = {
     gameId: game.id,
@@ -2241,7 +2247,7 @@ function getTime(value) {
 
 function createGame(players, setup, startingIndex = 0, revision = 0) {
   const restjagd = setup.mode === "restjagd";
-  const startScore = restjagd ? Math.floor(Math.random() * 179) + 2 : setup.startScore;
+  const startScore = restjagd ? drawRestjagdNumber() : setup.startScore;
   return {
     id: createId(),
     mode: restjagd ? "restjagd" : "classic",
