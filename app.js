@@ -48,6 +48,9 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
+const RESTJAGD_REEL_DURATION = 3000;
+const RESTJAGD_REEL_CARD_COUNT = 22;
+const RESTJAGD_REEL_FINAL_INDEX = 18;
 
 const defaultState = {
   activeView: "game",
@@ -647,7 +650,7 @@ function startRestjagdReel(runId) {
   }
   const { track, start, finish } = positions;
   if (typeof track.animate !== "function") {
-    track.style.transition = "transform 2100ms cubic-bezier(.12, .72, .12, 1)";
+    track.style.transition = `transform ${RESTJAGD_REEL_DURATION}ms cubic-bezier(.12, .72, .12, 1)`;
     window.requestAnimationFrame(() => {
       if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${finish}px, 0, 0)`;
     });
@@ -655,9 +658,9 @@ function startRestjagdReel(runId) {
     restjagdIntro.animation = track.animate([
       { transform: `translate3d(${start}px, 0, 0)` },
       { transform: `translate3d(${finish}px, 0, 0)` }
-    ], { duration: 2100, easing: "cubic-bezier(.12, .72, .12, 1)", fill: "forwards" });
+    ], { duration: RESTJAGD_REEL_DURATION, easing: "cubic-bezier(.12, .72, .12, 1)", fill: "forwards" });
   }
-  scheduleRestjagdIntro(() => settleRestjagdIntro(), 2100, runId);
+  scheduleRestjagdIntro(() => settleRestjagdIntro(), RESTJAGD_REEL_DURATION, runId);
 }
 
 function settleRestjagdIntro(autoCloseDelay = 1700) {
@@ -692,10 +695,10 @@ function openRestjagdIntro(game) {
   restjagdIntroRunId += 1;
   const runId = restjagdIntroRunId;
   const reducedMotion = prefersReducedMotion();
-  const finalIndex = reducedMotion ? 0 : 12;
+  const finalIndex = reducedMotion ? 0 : RESTJAGD_REEL_FINAL_INDEX;
   const candidates = Array.from({ length: 179 }, (_, index) => index + 2)
     .filter((number) => number !== game.startScore);
-  const numbers = Array.from({ length: reducedMotion ? 1 : 16 }, (_, index) => {
+  const numbers = Array.from({ length: reducedMotion ? 1 : RESTJAGD_REEL_CARD_COUNT }, (_, index) => {
     if (index === finalIndex) return game.startScore;
     return candidates.splice(Math.floor(Math.random() * candidates.length), 1)[0];
   });
