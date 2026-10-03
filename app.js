@@ -48,9 +48,10 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
-const RESTJAGD_REEL_DURATION = 18000;
-const RESTJAGD_REEL_CARD_COUNT = 64;
-const RESTJAGD_REEL_FINAL_INDEX = 60;
+const RESTJAGD_REEL_DURATION = 15000;
+const RESTJAGD_REEL_CARD_COUNT = 96;
+const RESTJAGD_REEL_FINAL_INDEX = 92;
+const RESTJAGD_REEL_SLOWDOWN = "cubic-bezier(.36, .51, .65, 1)";
 
 const defaultState = {
   activeView: "game",
@@ -649,7 +650,7 @@ function startRestjagdReel(runId) {
     return;
   }
   const { track, start, finish } = positions;
-  const cruise = start + (finish - start) * 0.8;
+  const cruise = start + (finish - start) * 0.85;
   const cruiseDuration = RESTJAGD_REEL_DURATION * 0.8;
   if (typeof track.animate !== "function") {
     track.style.transition = `transform ${cruiseDuration}ms linear`;
@@ -657,13 +658,13 @@ function startRestjagdReel(runId) {
       if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${cruise}px, 0, 0)`;
     });
     scheduleRestjagdIntro(() => {
-      track.style.transition = `transform ${RESTJAGD_REEL_DURATION - cruiseDuration}ms cubic-bezier(.12, .72, .12, 1)`;
+      track.style.transition = `transform ${RESTJAGD_REEL_DURATION - cruiseDuration}ms ${RESTJAGD_REEL_SLOWDOWN}`;
       track.style.transform = `translate3d(${finish}px, 0, 0)`;
     }, cruiseDuration, runId);
   } else {
     restjagdIntro.animation = track.animate([
       { transform: `translate3d(${start}px, 0, 0)`, offset: 0, easing: "linear" },
-      { transform: `translate3d(${cruise}px, 0, 0)`, offset: 0.8, easing: "cubic-bezier(.12, .72, .12, 1)" },
+      { transform: `translate3d(${cruise}px, 0, 0)`, offset: 0.8, easing: RESTJAGD_REEL_SLOWDOWN },
       { transform: `translate3d(${finish}px, 0, 0)`, offset: 1 }
     ], { duration: RESTJAGD_REEL_DURATION, fill: "forwards" });
   }
