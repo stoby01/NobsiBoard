@@ -48,10 +48,10 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
-const RESTJAGD_REEL_DURATION = 4500;
+const RESTJAGD_REEL_DURATION = 4000;
 const RESTJAGD_REEL_BRAKE_DURATION = 2000;
-const RESTJAGD_REEL_CARD_COUNT = 60;
-const RESTJAGD_REEL_FINAL_INDEX = 56;
+const RESTJAGD_REEL_CARD_COUNT = 72;
+const RESTJAGD_REEL_FINAL_INDEX = 68;
 const RESTJAGD_REEL_SLOWDOWN = "cubic-bezier(.333333, .666667, .666667, 1)";
 
 const defaultState = {
