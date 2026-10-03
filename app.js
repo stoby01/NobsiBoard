@@ -48,9 +48,10 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
-const RESTJAGD_REEL_DURATION = 5000;
-const RESTJAGD_REEL_CARD_COUNT = 57;
-const RESTJAGD_REEL_FINAL_INDEX = 53;
+const RESTJAGD_REEL_DURATION = 4500;
+const RESTJAGD_REEL_BRAKE_DURATION = 2000;
+const RESTJAGD_REEL_CARD_COUNT = 60;
+const RESTJAGD_REEL_FINAL_INDEX = 56;
 const RESTJAGD_REEL_SLOWDOWN = "cubic-bezier(.333333, .666667, .666667, 1)";
 
 const defaultState = {
@@ -650,8 +651,9 @@ function startRestjagdReel(runId) {
     return;
   }
   const { track, start, finish } = positions;
-  const cruise = start + (finish - start) * 0.75;
-  const cruiseDuration = RESTJAGD_REEL_DURATION * 0.6;
+  const cruiseDuration = RESTJAGD_REEL_DURATION - RESTJAGD_REEL_BRAKE_DURATION;
+  const cruiseFraction = cruiseDuration / (cruiseDuration + RESTJAGD_REEL_BRAKE_DURATION / 2);
+  const cruise = start + (finish - start) * cruiseFraction;
   if (typeof track.animate !== "function") {
     track.style.transition = `transform ${cruiseDuration}ms linear`;
     window.requestAnimationFrame(() => {
@@ -664,7 +666,7 @@ function startRestjagdReel(runId) {
   } else {
     restjagdIntro.animation = track.animate([
       { transform: `translate3d(${start}px, 0, 0)`, offset: 0, easing: "linear" },
-      { transform: `translate3d(${cruise}px, 0, 0)`, offset: 0.6, easing: RESTJAGD_REEL_SLOWDOWN },
+      { transform: `translate3d(${cruise}px, 0, 0)`, offset: cruiseDuration / RESTJAGD_REEL_DURATION, easing: RESTJAGD_REEL_SLOWDOWN },
       { transform: `translate3d(${finish}px, 0, 0)`, offset: 1 }
     ], { duration: RESTJAGD_REEL_DURATION, fill: "forwards" });
   }

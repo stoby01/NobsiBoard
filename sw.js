@@ -1,4 +1,4 @@
-const CACHE_NAME = "nobsiboard-v51";
+const CACHE_NAME = "nobsiboard-v52";
 const ASSETS = [
   "./",
   "./index.html",
