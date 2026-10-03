@@ -336,6 +336,8 @@ function setSyncRuntime(status, detail, error = "", shouldRender = true) {
 }
 
 function render() {
+  const runningIntro = isRestjagdIntroVisible() && !restjagdIntro.settled
+    ? app.querySelector(".restjagd-intro-backdrop") : null;
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
@@ -365,6 +367,7 @@ function render() {
       </div>
     </div>
   `;
+  if (runningIntro) app.querySelector(".restjagd-intro-backdrop")?.replaceWith(runningIntro);
   syncModePickerUI();
 }
 
@@ -396,7 +399,7 @@ function renderMainOnly() {
   }
   main.innerHTML = renderMainContent();
   const overlayRoot = app.querySelector("#overlay-root");
-  if (overlayRoot) overlayRoot.innerHTML = renderOverlays();
+  if (overlayRoot && !isRestjagdIntroVisible()) overlayRoot.innerHTML = renderOverlays();
   syncModePickerUI();
 }
 
@@ -587,14 +590,15 @@ function prefersReducedMotion() {
 }
 
 function renderRestjagdIntro() {
-  const finalNumber = Number(state.activeGame.startScore);
-  const number = restjagdIntro.settled ? finalNumber : restjagdIntro.displayNumber;
   return `
     <div class="restjagd-intro-backdrop" data-action="skip-restjagd-intro">
       <section class="restjagd-intro-card ${restjagdIntro.settled ? "settled" : "rolling"}" role="dialog" aria-modal="true" aria-labelledby="restjagd-intro-title" aria-describedby="restjagd-intro-caption">
         <p class="restjagd-intro-kicker">DartMix</p>
         <h2 id="restjagd-intro-title">RESTJAGD</h2>
-        <div class="restjagd-intro-number" aria-hidden="true">${escapeHtml(number)}</div>
+        <div class="restjagd-reel-window" aria-hidden="true">
+          <div class="restjagd-reel-track">${restjagdIntro.numbers.map((number, index) => `
+            <span class="restjagd-reel-number ${index === restjagdIntro.finalIndex ? "winning-number" : ""}">${number}</span>`).join("")}</div>
+        </div>
         <p id="restjagd-intro-caption" class="restjagd-intro-caption" aria-live="polite">${restjagdIntro.settled ? "Euer gemeinsamer Rest" : "Euer Rest wird ausgelost ..."}</p>
         <button class="restjagd-intro-skip" data-action="skip-restjagd-intro">${restjagdIntro.settled ? "Los geht's" : "Antippen zum &Uuml;berspringen"}</button>
       </section>
@@ -605,6 +609,7 @@ function renderOverlayRoot() {
   const overlay = app.querySelector("#overlay-root");
   if (overlay) overlay.innerHTML = renderOverlays();
   syncModePickerUI();
+  positionRestjagdReel();
 }
 
 function clearRestjagdIntroTimers() {
@@ -620,34 +625,55 @@ function scheduleRestjagdIntro(callback, delay, runId = restjagdIntroRunId) {
   restjagdIntroTimers.push(timer);
 }
 
-function randomRestjagdPreview(finalNumber) {
-  let preview = finalNumber;
-  for (let attempt = 0; attempt < 6 && preview === finalNumber; attempt += 1) {
-    preview = Math.floor(Math.random() * 179) + 2;
+function positionRestjagdReel() {
+  if (!isRestjagdIntroVisible()) return null;
+  const viewport = app.querySelector(".restjagd-reel-window");
+  const track = viewport?.querySelector(".restjagd-reel-track");
+  const cards = track?.querySelectorAll(".restjagd-reel-number");
+  if (!viewport || !track || !cards.length) return null;
+  const first = cards[0];
+  const winner = cards[restjagdIntro.finalIndex];
+  const start = (viewport.clientWidth - first.clientWidth) / 2 - first.offsetLeft;
+  const finish = (viewport.clientWidth - winner.clientWidth) / 2 - winner.offsetLeft;
+  track.style.transform = `translate3d(${restjagdIntro.settled ? finish : start}px, 0, 0)`;
+  return { track, start, finish };
+}
+
+function startRestjagdReel(runId) {
+  const positions = positionRestjagdReel();
+  if (!positions) {
+    settleRestjagdIntro();
+    return;
   }
-  return preview === finalNumber ? (finalNumber === 180 ? 179 : finalNumber + 1) : preview;
+  const { track, start, finish } = positions;
+  if (typeof track.animate !== "function") {
+    track.style.transition = "transform 2100ms cubic-bezier(.12, .72, .12, 1)";
+    window.requestAnimationFrame(() => {
+      if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${finish}px, 0, 0)`;
+    });
+  } else {
+    restjagdIntro.animation = track.animate([
+      { transform: `translate3d(${start}px, 0, 0)` },
+      { transform: `translate3d(${finish}px, 0, 0)` }
+    ], { duration: 2100, easing: "cubic-bezier(.12, .72, .12, 1)", fill: "forwards" });
+  }
+  scheduleRestjagdIntro(() => settleRestjagdIntro(), 2100, runId);
 }
 
-function updateRestjagdIntroNumber() {
-  if (!isRestjagdIntroVisible() || restjagdIntro.settled) return;
-  restjagdIntro.displayNumber = randomRestjagdPreview(state.activeGame.startScore);
-  const number = app.querySelector(".restjagd-intro-number");
-  if (!number) return;
-  number.textContent = restjagdIntro.displayNumber;
-}
-
-function settleRestjagdIntro(autoCloseDelay = 850) {
+function settleRestjagdIntro(autoCloseDelay = 1700) {
   if (!isRestjagdIntroVisible() || restjagdIntro.settled) return;
   clearRestjagdIntroTimers();
+  restjagdIntro.animation?.cancel();
   restjagdIntro.settled = true;
-  restjagdIntro.displayNumber = state.activeGame.startScore;
   renderOverlayRoot();
+  app.querySelector(".restjagd-intro-skip")?.focus();
   scheduleRestjagdIntro(closeRestjagdIntro, autoCloseDelay);
 }
 
 function closeRestjagdIntro() {
   if (!restjagdIntro) return;
   clearRestjagdIntroTimers();
+  restjagdIntro.animation?.cancel();
   restjagdIntroRunId += 1;
   restjagdIntro = null;
   renderOverlayRoot();
@@ -657,7 +683,7 @@ function closeRestjagdIntro() {
 function skipRestjagdIntro() {
   if (!isRestjagdIntroVisible()) return;
   if (restjagdIntro.settled) closeRestjagdIntro();
-  else settleRestjagdIntro(450);
+  else settleRestjagdIntro();
 }
 
 function openRestjagdIntro(game) {
@@ -666,9 +692,17 @@ function openRestjagdIntro(game) {
   restjagdIntroRunId += 1;
   const runId = restjagdIntroRunId;
   const reducedMotion = prefersReducedMotion();
+  const finalIndex = reducedMotion ? 0 : 12;
+  const candidates = Array.from({ length: 179 }, (_, index) => index + 2)
+    .filter((number) => number !== game.startScore);
+  const numbers = Array.from({ length: reducedMotion ? 1 : 16 }, (_, index) => {
+    if (index === finalIndex) return game.startScore;
+    return candidates.splice(Math.floor(Math.random() * candidates.length), 1)[0];
+  });
   restjagdIntro = {
     gameId: game.id,
-    displayNumber: reducedMotion ? game.startScore : randomRestjagdPreview(game.startScore),
+    numbers,
+    finalIndex,
     settled: reducedMotion
   };
   renderOverlayRoot();
@@ -678,19 +712,7 @@ function openRestjagdIntro(game) {
     scheduleRestjagdIntro(closeRestjagdIntro, 2000, runId);
     return;
   }
-
-  const delays = [65, 65, 70, 75, 85, 95, 110, 130, 160, 210, 260];
-  let step = 0;
-  const roll = () => {
-    updateRestjagdIntroNumber();
-    if (step === delays.length - 1) {
-      scheduleRestjagdIntro(() => settleRestjagdIntro(), delays[step], runId);
-      return;
-    }
-    step += 1;
-    scheduleRestjagdIntro(roll, delays[step], runId);
-  };
-  scheduleRestjagdIntro(roll, delays[step], runId);
+  startRestjagdReel(runId);
 }
 
 function refreshModePicker(focusSelector) {

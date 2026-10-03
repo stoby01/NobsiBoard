@@ -2233,7 +2233,7 @@ body.mode-picker-open { overflow: hidden; }
   .shared-score { padding: 12px; }
 }
 
-/* Restjagd draw: compact, touch-friendly and safe on short landscape screens. */
+/* Restjagd draw: one moving strip, with a fixed marker. */
 body.restjagd-intro-open { overflow: hidden; }
 .restjagd-intro-backdrop {
   position: fixed;
@@ -2243,33 +2243,27 @@ body.restjagd-intro-open { overflow: hidden; }
   place-items: center;
   padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   overflow-y: auto;
-  background: rgba(4, 8, 16, 0.94);
+  background: rgba(4, 8, 16, 0.95);
   cursor: pointer;
-  animation: restjagd-backdrop-in 220ms ease-out both;
 }
 .restjagd-intro-card {
-  width: min(100%, 520px);
+  width: min(100%, 580px);
   max-height: calc(100dvh - 24px);
   display: grid;
-  justify-items: center;
   align-content: center;
-  gap: 8px;
-  padding: clamp(22px, 5vw, 44px);
+  gap: 14px;
+  padding: clamp(18px, 4vw, 32px);
   overflow: auto;
-  border: 1px solid rgba(245, 158, 11, 0.5);
-  border-radius: 18px;
-  background: radial-gradient(circle at 50% 35%, rgba(185, 28, 28, 0.34), transparent 48%), linear-gradient(155deg, #171d29, #080c13);
+  border: 1px solid #b45309;
+  border-radius: 12px;
+  background: #111827;
   color: white;
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55), inset 0 0 30px rgba(245, 158, 11, 0.07);
   text-align: center;
   cursor: default;
-  contain: layout paint;
-  will-change: transform, opacity;
-  animation: restjagd-card-in 420ms cubic-bezier(.2, .8, .2, 1) both;
 }
 .restjagd-intro-kicker {
   margin: 0;
-  color: #fbbf24;
+  color: #fcd34d;
   font-size: 0.76rem;
   font-weight: 900;
   letter-spacing: 0.24em;
@@ -2277,38 +2271,71 @@ body.restjagd-intro-open { overflow: hidden; }
 }
 .restjagd-intro-card h2 {
   margin: 0;
-  font-size: clamp(1.55rem, 6vw, 2.8rem);
+  font-size: clamp(1.5rem, 5vw, 2.2rem);
   line-height: 1;
   letter-spacing: 0.08em;
-  text-shadow: 0 2px 18px rgba(220, 38, 38, 0.45);
 }
-.restjagd-intro-number {
-  min-width: 3ch;
-  margin: clamp(6px, 2vh, 18px) 0 0;
-  color: #fff7d6;
-  font-size: clamp(5rem, 22vw, 9rem);
+.restjagd-reel-window {
+  position: relative;
+  width: 100%;
+  height: clamp(82px, 19vw, 112px);
+  overflow: hidden;
+  border-top: 1px solid #475569;
+  border-bottom: 1px solid #475569;
+  background: #0b1220;
+  contain: paint;
+}
+.restjagd-reel-window::before,
+.restjagd-reel-window::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  z-index: 1;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+}
+.restjagd-reel-window::before { top: 0; border-top: 11px solid #fbbf24; }
+.restjagd-reel-window::after { bottom: 0; border-bottom: 11px solid #fbbf24; }
+.restjagd-reel-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  height: 100%;
+  will-change: transform;
+}
+.restjagd-reel-number {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  flex: 0 0 clamp(72px, 21vw, 96px);
+  height: calc(100% - 18px);
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: clamp(1.6rem, 6vw, 2.5rem);
   font-variant-numeric: tabular-nums;
-  font-weight: 950;
-  letter-spacing: -0.06em;
-  line-height: 0.85;
-  text-indent: -0.06em;
-  text-shadow: 0 0 18px rgba(220, 38, 38, 0.7);
+  font-weight: 900;
 }
-.restjagd-intro-card.settled .restjagd-intro-number {
-  color: #fde68a;
-  animation: restjagd-number-settle 520ms cubic-bezier(.16, 1, .3, 1) both;
+.restjagd-intro-card.settled .winning-number {
+  border-color: #fbbf24;
+  background: #fbbf24;
+  color: #111827;
 }
 .restjagd-intro-caption {
   min-height: 1.5em;
-  margin: 4px 0 0;
+  margin: 0;
   color: #e5e7eb;
-  font-size: clamp(1rem, 3.5vw, 1.25rem);
+  font-size: clamp(0.95rem, 3.5vw, 1.15rem);
   font-weight: 750;
 }
-.restjagd-intro-card.settled .restjagd-intro-caption { animation: restjagd-caption-in 300ms 120ms ease-out both; }
 .restjagd-intro-skip {
   min-height: 44px;
-  margin-top: 10px;
+  justify-self: center;
   padding: 8px 15px;
   border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: 999px;
@@ -2320,41 +2347,15 @@ body.restjagd-intro-open { overflow: hidden; }
   cursor: pointer;
 }
 .restjagd-intro-skip:focus-visible { outline: 3px solid #fbbf24; outline-offset: 3px; }
-@keyframes restjagd-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes restjagd-card-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
-@keyframes restjagd-number-settle {
-  0% { transform: scale(0.94); text-shadow: 0 0 12px rgba(220, 38, 38, 0.55); }
-  55% { transform: scale(1.14); text-shadow: 0 0 32px rgba(245, 158, 11, 0.95), 0 0 60px rgba(220, 38, 38, 0.7); }
-  100% { transform: scale(1); text-shadow: 0 0 20px rgba(245, 158, 11, 0.68), 0 0 38px rgba(220, 38, 38, 0.45); }
-}
-@keyframes restjagd-caption-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
-@keyframes restjagd-number-settle-mobile {
-  0% { transform: scale(0.96); }
-  55% { transform: scale(1.1); }
-  100% { transform: scale(1); }
-}
-@media (max-width: 760px) {
-  .restjagd-intro-card {
-    box-shadow: 0 16px 42px rgba(0, 0, 0, 0.5);
-    animation-duration: 320ms;
-  }
-  .restjagd-intro-number { text-shadow: 0 0 14px rgba(220, 38, 38, 0.58); }
-  .restjagd-intro-card.settled .restjagd-intro-number {
-    text-shadow: 0 0 17px rgba(245, 158, 11, 0.7), 0 0 28px rgba(220, 38, 38, 0.42);
-    animation-name: restjagd-number-settle-mobile;
-  }
-}
 @media (max-height: 480px) and (orientation: landscape) {
-  .restjagd-intro-card { width: min(86vw, 560px); gap: 3px; padding: 14px 24px; }
+  .restjagd-intro-card { width: min(86vw, 560px); gap: 6px; padding: 12px 18px; }
   .restjagd-intro-kicker { font-size: 0.66rem; }
   .restjagd-intro-card h2 { font-size: 1.45rem; }
-  .restjagd-intro-number { margin-top: 2px; font-size: clamp(4rem, 22vh, 6rem); }
+  .restjagd-reel-window { height: 72px; }
+  .restjagd-reel-number { flex-basis: 76px; font-size: 1.7rem; }
   .restjagd-intro-caption { font-size: 0.95rem; }
   .restjagd-intro-skip { min-height: 38px; margin-top: 3px; padding: 5px 13px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .restjagd-intro-backdrop,
-  .restjagd-intro-card,
-  .restjagd-intro-number,
-  .restjagd-intro-caption { animation: none !important; }
+  .restjagd-reel-track { transition: none !important; animation: none !important; }
 }
