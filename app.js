@@ -48,9 +48,9 @@ const gameModes = [
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
-const RESTJAGD_REEL_DURATION = 3000;
-const RESTJAGD_REEL_CARD_COUNT = 22;
-const RESTJAGD_REEL_FINAL_INDEX = 18;
+const RESTJAGD_REEL_DURATION = 10000;
+const RESTJAGD_REEL_CARD_COUNT = 64;
+const RESTJAGD_REEL_FINAL_INDEX = 60;
 
 const defaultState = {
   activeView: "game",
@@ -649,16 +649,23 @@ function startRestjagdReel(runId) {
     return;
   }
   const { track, start, finish } = positions;
+  const cruise = start + (finish - start) * 0.8;
+  const cruiseDuration = RESTJAGD_REEL_DURATION * 0.8;
   if (typeof track.animate !== "function") {
-    track.style.transition = `transform ${RESTJAGD_REEL_DURATION}ms cubic-bezier(.12, .72, .12, 1)`;
+    track.style.transition = `transform ${cruiseDuration}ms linear`;
     window.requestAnimationFrame(() => {
-      if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${finish}px, 0, 0)`;
+      if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${cruise}px, 0, 0)`;
     });
+    scheduleRestjagdIntro(() => {
+      track.style.transition = `transform ${RESTJAGD_REEL_DURATION - cruiseDuration}ms cubic-bezier(.12, .72, .12, 1)`;
+      track.style.transform = `translate3d(${finish}px, 0, 0)`;
+    }, cruiseDuration, runId);
   } else {
     restjagdIntro.animation = track.animate([
-      { transform: `translate3d(${start}px, 0, 0)` },
-      { transform: `translate3d(${finish}px, 0, 0)` }
-    ], { duration: RESTJAGD_REEL_DURATION, easing: "cubic-bezier(.12, .72, .12, 1)", fill: "forwards" });
+      { transform: `translate3d(${start}px, 0, 0)`, offset: 0, easing: "linear" },
+      { transform: `translate3d(${cruise}px, 0, 0)`, offset: 0.8, easing: "cubic-bezier(.12, .72, .12, 1)" },
+      { transform: `translate3d(${finish}px, 0, 0)`, offset: 1 }
+    ], { duration: RESTJAGD_REEL_DURATION, fill: "forwards" });
   }
   scheduleRestjagdIntro(() => settleRestjagdIntro(), RESTJAGD_REEL_DURATION, runId);
 }
@@ -696,11 +703,9 @@ function openRestjagdIntro(game) {
   const runId = restjagdIntroRunId;
   const reducedMotion = prefersReducedMotion();
   const finalIndex = reducedMotion ? 0 : RESTJAGD_REEL_FINAL_INDEX;
-  const candidates = Array.from({ length: 179 }, (_, index) => index + 2)
-    .filter((number) => number !== game.startScore);
   const numbers = Array.from({ length: reducedMotion ? 1 : RESTJAGD_REEL_CARD_COUNT }, (_, index) => {
     if (index === finalIndex) return game.startScore;
-    return candidates.splice(Math.floor(Math.random() * candidates.length), 1)[0];
+    return Math.floor(Math.random() * 179) + 2;
   });
   restjagdIntro = {
     gameId: game.id,
