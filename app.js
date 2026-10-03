@@ -49,9 +49,8 @@ const gameModes = [
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
 const RESTJAGD_REEL_DURATION = 18000;
-const RESTJAGD_REEL_CARD_COUNT = 72;
-const RESTJAGD_REEL_FINAL_INDEX = 68;
-const RESTJAGD_REEL_EASING = "cubic-bezier(.35, .48, .65, 1)";
+const RESTJAGD_REEL_CARD_COUNT = 64;
+const RESTJAGD_REEL_FINAL_INDEX = 60;
 
 const defaultState = {
   activeView: "game",
@@ -650,16 +649,23 @@ function startRestjagdReel(runId) {
     return;
   }
   const { track, start, finish } = positions;
+  const cruise = start + (finish - start) * 0.8;
+  const cruiseDuration = RESTJAGD_REEL_DURATION * 0.8;
   if (typeof track.animate !== "function") {
-    track.style.transition = `transform ${RESTJAGD_REEL_DURATION}ms ${RESTJAGD_REEL_EASING}`;
+    track.style.transition = `transform ${cruiseDuration}ms linear`;
     window.requestAnimationFrame(() => {
-      if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${finish}px, 0, 0)`;
+      if (runId === restjagdIntroRunId) track.style.transform = `translate3d(${cruise}px, 0, 0)`;
     });
+    scheduleRestjagdIntro(() => {
+      track.style.transition = `transform ${RESTJAGD_REEL_DURATION - cruiseDuration}ms cubic-bezier(.12, .72, .12, 1)`;
+      track.style.transform = `translate3d(${finish}px, 0, 0)`;
+    }, cruiseDuration, runId);
   } else {
     restjagdIntro.animation = track.animate([
-      { transform: `translate3d(${start}px, 0, 0)` },
-      { transform: `translate3d(${finish}px, 0, 0)` }
-    ], { duration: RESTJAGD_REEL_DURATION, easing: RESTJAGD_REEL_EASING, fill: "forwards" });
+      { transform: `translate3d(${start}px, 0, 0)`, offset: 0, easing: "linear" },
+      { transform: `translate3d(${cruise}px, 0, 0)`, offset: 0.8, easing: "cubic-bezier(.12, .72, .12, 1)" },
+      { transform: `translate3d(${finish}px, 0, 0)`, offset: 1 }
+    ], { duration: RESTJAGD_REEL_DURATION, fill: "forwards" });
   }
   scheduleRestjagdIntro(() => settleRestjagdIntro(), RESTJAGD_REEL_DURATION, runId);
 }
