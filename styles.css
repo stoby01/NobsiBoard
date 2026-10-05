@@ -2359,3 +2359,65 @@ body.restjagd-intro-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .restjagd-reel-track { transition: none !important; animation: none !important; }
 }
+
+/* DartRoulette uses a static board and updates just one highlighted SVG path. */
+body.roulette-intro-open { overflow: hidden; }
+.roulette-intro-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 41;
+  display: grid;
+  place-items: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgba(4, 8, 16, .95);
+  overflow-y: auto;
+}
+.roulette-intro-card {
+  width: min(100%, 480px);
+  max-height: calc(100dvh - 24px);
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: clamp(12px, 3vw, 24px);
+  overflow: auto;
+  border: 1px solid #b45309;
+  border-radius: 12px;
+  background: #111827;
+  color: white;
+  text-align: center;
+}
+.roulette-kicker { margin: 0; color: #fcd34d; font-size: .77rem; font-weight: 900; letter-spacing: .14em; }
+.roulette-intro-card h2 { margin: 0; font-size: clamp(1.15rem, 4vw, 1.7rem); }
+.roulette-board { display: block; width: min(100%, 310px, 42dvh); height: auto; aspect-ratio: 1; contain: paint; }
+.roulette-board text { fill: #fff; font-size: 12px; font-weight: 900; paint-order: stroke fill; stroke: #0b1220; stroke-width: 3px; }
+.roulette-highlight { opacity: .96; }
+.roulette-caption { min-height: 1.4em; margin: 0; font-weight: 850; color: #f8fafc; }
+.roulette-intro-skip {
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 999px;
+  background: rgba(255,255,255,.08);
+  color: white;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+.roulette-intro-skip:focus-visible { outline: 3px solid #fbbf24; outline-offset: 3px; }
+.roulette-status { display: grid; gap: 10px; padding: 14px; border-radius: 8px; background: #111827; color: white; }
+.roulette-status-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.roulette-target-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 8px; background: #fbbf24; color: #111827; font-weight: 850; }
+.roulette-target-line strong { font-size: clamp(1.7rem, 6vw, 2.8rem); line-height: 1; }
+.roulette-player-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.roulette-player { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 8px; border: 1px solid #475569; border-radius: 8px; background: #1e293b; font-size: .82rem; }
+.roulette-player strong { overflow-wrap: anywhere; }
+.roulette-player span:last-child { color: #cbd5e1; }
+.roulette-player.active { border-color: #fbbf24; }
+.roulette-player.eliminated { opacity: .55; }
+.roulette-rule { margin: 0; color: #cbd5e1; font-size: .86rem; }
+@media (max-height: 480px) and (orientation: landscape) {
+  .roulette-intro-card { width: min(92vw, 600px); grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+  .roulette-intro-card .roulette-board { grid-column: 2; grid-row: 1 / span 4; width: min(56dvh, 240px); }
+  .roulette-intro-card .roulette-intro-skip { min-height: 38px; }
+}

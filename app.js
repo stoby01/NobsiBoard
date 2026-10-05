@@ -46,7 +46,8 @@ const avatarOptions = {
 const gameModes = [
   { id: "classic-301", kind: "classic", category: "classic", name: "301", subtitle: "Kurz", startScore: 301, minPlayers: 2, fixedCheckout: null },
   { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
-  { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
+  { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null },
+  { id: "dartroulette", kind: "dartroulette", category: "dartmix", name: "DartRoulette", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
 const RESTJAGD_MIN_NUMBER = 2;
 const RESTJAGD_MAX_NUMBER = 180;
@@ -67,6 +68,7 @@ const defaultState = {
     mode: "classic",
     startScore: 501,
     checkout: "straight",
+    rouletteScope: "single",
     selectedPlayerIds: []
   },
   sync: {
@@ -97,6 +99,9 @@ let pendingModeId = "";
 let restjagdIntro = null;
 let restjagdIntroTimers = [];
 let restjagdIntroRunId = 0;
+let rouletteIntro = null;
+let rouletteIntroTimer = null;
+let rouletteIntroRunId = 0;
 let updateReady = false;
 let updateApplying = false;
 let updateWorker = null;
@@ -210,20 +215,48 @@ function loadState() {
 
 function normalizeSetup(setup = {}) {
   const result = { ...defaultState.setup, ...setup };
-  result.mode = result.mode === "restjagd" ? "restjagd" : "classic";
+  result.mode = ["restjagd", "dartroulette"].includes(result.mode) ? result.mode : "classic";
   result.startScore = Number(result.startScore) === 301 ? 301 : 501;
   result.checkout = result.checkout === "double" ? "double" : "straight";
+  result.rouletteScope = result.rouletteScope === "all" ? "all" : "single";
   result.selectedPlayerIds = Array.isArray(result.selectedPlayerIds) ? result.selectedPlayerIds : [];
   return result;
 }
 
 function getSetupMode() {
-  const id = state.setup.mode === "restjagd" ? "restjagd" : `classic-${state.setup.startScore}`;
+  const id = ["restjagd", "dartroulette"].includes(state.setup.mode) ? state.setup.mode : `classic-${state.setup.startScore}`;
   return gameModes.find((mode) => mode.id === id) || gameModes[1];
 }
 
 function isRestjagd(game) {
   return Boolean(game && game.mode === "restjagd");
+}
+
+function isDartRoulette(game) {
+  return Boolean(game && game.mode === "dartroulette");
+}
+
+function getRouletteTargets(scope) {
+  const singles = dartNumbers.map((number) => ({ label: String(number), type: "single", number }));
+  if (scope !== "all") return singles;
+  return [...singles,
+    ...dartNumbers.map((number) => ({ label: `D${number}`, type: "double", number })),
+    ...dartNumbers.map((number) => ({ label: `T${number}`, type: "triple", number })),
+    { label: "Bull", type: "bull", number: 25 },
+    { label: "Bullseye", type: "bullseye", number: 50 }];
+}
+
+function drawRouletteTarget(scope) {
+  const targets = getRouletteTargets(scope);
+  return targets[Math.floor(Math.random() * targets.length)];
+}
+
+function rouletteTargetName(target) {
+  return target && target.type === "single" ? `S${target.number}` : target?.label || "";
+}
+
+function isRouletteHit(dart, target) {
+  return Boolean(dart && target && dart.label === target.label && dart.type === target.type);
 }
 
 function drawRestjagdNumber() {
@@ -348,7 +381,8 @@ function setSyncRuntime(status, detail, error = "", shouldRender = true) {
 
 function render() {
   const runningIntro = isRestjagdIntroVisible() && !restjagdIntro.settled
-    ? app.querySelector(".restjagd-intro-backdrop") : null;
+    ? app.querySelector(".restjagd-intro-backdrop") : isRouletteIntroVisible() && !rouletteIntro.settled
+      ? app.querySelector(".roulette-intro-backdrop") : null;
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
@@ -378,7 +412,7 @@ function render() {
       </div>
     </div>
   `;
-  if (runningIntro) app.querySelector(".restjagd-intro-backdrop")?.replaceWith(runningIntro);
+  if (runningIntro) app.querySelector(`.${runningIntro.classList[0]}`)?.replaceWith(runningIntro);
   syncModePickerUI();
 }
 
@@ -394,6 +428,7 @@ function renderOverlays() {
     ${welcomeOpen ? renderWelcomePopup() : ""}
     ${modePickerOpen ? renderModePicker() : ""}
     ${isRestjagdIntroVisible() ? renderRestjagdIntro() : ""}
+    ${isRouletteIntroVisible() ? renderRouletteIntro() : ""}
     ${avatarEditorPlayerId ? renderAvatarEditor() : ""}
     ${installHelpOpen ? renderInstallHelp() : ""}
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
@@ -410,7 +445,7 @@ function renderMainOnly() {
   }
   main.innerHTML = renderMainContent();
   const overlayRoot = app.querySelector("#overlay-root");
-  if (overlayRoot && !isRestjagdIntroVisible()) overlayRoot.innerHTML = renderOverlays();
+  if (overlayRoot && !isRestjagdIntroVisible() && !isRouletteIntroVisible()) overlayRoot.innerHTML = renderOverlays();
   syncModePickerUI();
 }
 
@@ -513,15 +548,25 @@ function renderGameView() {
               <span class="mode-chevron" aria-hidden="true">&rsaquo;</span>
             </button>
             ${mode.kind === "restjagd" ? `<p class="mode-description">Zufallszahl von 2 bis 180. Ein gemeinsamer Rest. Wer auf null kommt, gewinnt. Auch solo spielbar.</p>` : ""}
+            ${mode.kind === "dartroulette" ? `<p class="mode-description">Jeder bekommt ein eigenes Zufallsfeld. Triff es mit hoechstens drei Darts, sonst scheidest du aus. Auch solo spielbar.</p>` : ""}
           </div>
+
+          ${mode.kind === "dartroulette" ? `<div>
+            <p class="hint">Zielfelder</p>
+            <div class="segmented" role="group" aria-label="Zielfelder fuer DartRoulette">
+              <button class="choice ${state.setup.rouletteScope === "single" ? "active" : ""}" data-action="set-roulette-scope" data-scope="single" aria-pressed="${state.setup.rouletteScope === "single"}">Nur Single<span>1 bis 20</span></button>
+              <button class="choice ${state.setup.rouletteScope === "all" ? "active" : ""}" data-action="set-roulette-scope" data-scope="all" aria-pressed="${state.setup.rouletteScope === "all"}">Alle Felder<span>Single, Double, Triple, Bull</span></button>
+            </div>
+            <p class="hint">Das genaue Feld muss getroffen werden. Bull und Bullseye zaehlen getrennt.</p>
+          </div>` : ""}
 
           <div>
             <p class="hint">Checkout</p>
             <div class="segmented" role="group" aria-label="Checkout-Regel">
-              <button class="choice ${checkout === "straight" ? "active" : ""}" data-action="set-checkout" data-checkout="straight" aria-pressed="${checkout === "straight"}" ${mode.fixedCheckout ? "disabled" : ""}>Einfach<span>genau 0</span></button>
-              <button class="choice ${checkout === "double" ? "active" : ""}" data-action="set-checkout" data-checkout="double" aria-pressed="${checkout === "double"}" ${mode.fixedCheckout ? "disabled" : ""}>Double Out<span>Double / Bullseye</span></button>
+              <button class="choice ${mode.kind !== "dartroulette" && checkout === "straight" ? "active" : ""}" data-action="set-checkout" data-checkout="straight" aria-pressed="${mode.kind !== "dartroulette" && checkout === "straight"}" ${mode.fixedCheckout || mode.kind === "dartroulette" ? "disabled" : ""}>Einfach<span>genau 0</span></button>
+              <button class="choice ${mode.kind !== "dartroulette" && checkout === "double" ? "active" : ""}" data-action="set-checkout" data-checkout="double" aria-pressed="${mode.kind !== "dartroulette" && checkout === "double"}" ${mode.fixedCheckout || mode.kind === "dartroulette" ? "disabled" : ""}>Double Out<span>Double / Bullseye</span></button>
             </div>
-            ${mode.fixedCheckout ? `<p class="hint">Dieser Modus wird immer mit ${checkout === "double" ? "Double Out" : "Einfach"} gespielt.</p>` : `<p class="hint checkout-hint">${checkout === "double" ? "Genau auf 0. Der letzte Dart muss ein Double oder Bullseye sein." : "Genau auf 0. Jedes Feld darf den Abschluss bringen."}</p>`}
+            ${mode.kind === "dartroulette" ? '<p class="hint">DartRoulette hat keinen Checkout: Es zaehlt nur dein ausgelostes Zielfeld.</p>' : mode.fixedCheckout ? `<p class="hint">Dieser Modus wird immer mit ${checkout === "double" ? "Double Out" : "Einfach"} gespielt.</p>` : `<p class="hint checkout-hint">${checkout === "double" ? "Genau auf 0. Der letzte Dart muss ein Double oder Bullseye sein." : "Genau auf 0. Jedes Feld darf den Abschluss bringen."}</p>`}
           </div>
 
           <div>
@@ -549,7 +594,7 @@ function renderGameView() {
         <div class="section-title">
           <h2>Schnellstart</h2>
         </div>
-        <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. ${mode.kind === "restjagd" ? "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Gespeichert werden spaeter nur die festen Spieler."}</p>
+        <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. ${mode.category === "dartmix" ? "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Gespeichert werden spaeter nur die festen Spieler."}</p>
         ${renderSyncPanel()}
       </aside>
     </section>
@@ -575,8 +620,8 @@ function renderModePicker() {
           ${gameModes.filter((mode) => mode.category === modePickerCategory).map((mode) => `
             <button class="mode-option ${pendingModeId === mode.id ? "selected" : ""}" data-action="pick-mode" data-mode-id="${mode.id}" aria-pressed="${pendingModeId === mode.id}">
               <span class="mode-option-heading"><strong>${mode.name}</strong><span>${mode.subtitle}</span><span class="mode-check" aria-hidden="true">${pendingModeId === mode.id ? "&#10003;" : ""}</span></span>
-              <span class="mode-option-description">${mode.kind === "restjagd" ? "Eine Zufallszahl. Ein Zaehler. Wer auf null kommt, gewinnt." : `Jeder spielt seinen eigenen Rest von ${mode.startScore} auf null.`}</span>
-              ${mode.kind === "restjagd" ? '<span class="mode-option-detail">2–180 Punkte &middot; ab 1 Spieler &middot; ohne Statistik</span>' : ""}
+              <span class="mode-option-description">${mode.kind === "restjagd" ? "Eine Zufallszahl. Ein Zaehler. Wer auf null kommt, gewinnt." : mode.kind === "dartroulette" ? "Pro Spieler ein eigenes Zielfeld. Drei Versuche, sonst raus." : `Jeder spielt seinen eigenen Rest von ${mode.startScore} auf null.`}</span>
+              ${mode.kind === "restjagd" ? '<span class="mode-option-detail">2–180 Punkte &middot; ab 1 Spieler &middot; ohne Statistik</span>' : mode.kind === "dartroulette" ? '<span class="mode-option-detail">Single oder alle Felder &middot; ab 1 Spieler &middot; ohne Statistik</span>' : ""}
             </button>`).join("")}
         </div>
         <button class="primary" data-action="apply-mode">Uebernehmen</button>
@@ -587,6 +632,7 @@ function renderModePicker() {
 function syncModePickerUI() {
   document.body.classList.toggle("mode-picker-open", modePickerOpen);
   document.body.classList.toggle("restjagd-intro-open", isRestjagdIntroVisible());
+  document.body.classList.toggle("roulette-intro-open", isRouletteIntroVisible());
   const picker = app.querySelector(".mode-picker");
   if (picker && !picker.contains(document.activeElement)) picker.querySelector('[aria-selected="true"]').focus();
 }
@@ -732,6 +778,144 @@ function openRestjagdIntro(game) {
   startRestjagdReel(runId);
 }
 
+const ROULETTE_BOARD_ORDER = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+
+function rouletteSectorPath(number, inner, outer) {
+  const index = ROULETTE_BOARD_ORDER.indexOf(number);
+  if (index < 0) return "";
+  const start = (-99 + index * 18) * Math.PI / 180;
+  const end = start + Math.PI / 10;
+  const point = (radius, angle) => `${(150 + radius * Math.cos(angle)).toFixed(2)} ${(150 + radius * Math.sin(angle)).toFixed(2)}`;
+  return `M ${point(outer, start)} A ${outer} ${outer} 0 0 1 ${point(outer, end)} L ${point(inner, end)} A ${inner} ${inner} 0 0 0 ${point(inner, start)} Z`;
+}
+
+function rouletteHighlightPath(target) {
+  if (!target) return "";
+  if (target.type === "bullseye" || target.type === "bull") {
+    const radius = target.type === "bullseye" ? 14 : 27;
+    const circle = (r) => `M ${150 - r} 150 a ${r} ${r} 0 1 0 ${r * 2} 0 a ${r} ${r} 0 1 0 -${r * 2} 0`;
+    return target.type === "bull" ? `${circle(radius)} ${circle(14)}` : circle(radius);
+  }
+  if (target.type === "double") return rouletteSectorPath(target.number, 112, 122);
+  if (target.type === "triple") return rouletteSectorPath(target.number, 70, 79);
+  return `${rouletteSectorPath(target.number, 27, 70)} ${rouletteSectorPath(target.number, 79, 112)}`;
+}
+
+function renderRouletteBoard(target) {
+  return `<svg class="roulette-board" viewBox="0 0 300 300" role="img" aria-label="Dartscheibe, markiert: ${escapeHtml(rouletteTargetName(target))}">
+    <circle cx="150" cy="150" r="124" fill="#0b1220" stroke="#cbd5e1" stroke-width="3"/>
+    ${ROULETTE_BOARD_ORDER.map((number, index) => `<path d="${rouletteSectorPath(number, 27, 122)}" fill="${index % 2 ? "#e9dfc9" : "#1e293b"}" stroke="#64748b" stroke-width=".6"/>`).join("")}
+    <circle cx="150" cy="150" r="117" fill="none" stroke="#c03935" stroke-width="10" opacity=".8"/>
+    <circle cx="150" cy="150" r="74.5" fill="none" stroke="#0f766e" stroke-width="9" opacity=".9"/>
+    <circle cx="150" cy="150" r="27" fill="#0f766e" stroke="#d4af37" stroke-width="1"/>
+    <circle cx="150" cy="150" r="14" fill="#b91c1c" stroke="#d4af37" stroke-width="1"/>
+    <path class="roulette-highlight" d="${rouletteHighlightPath(target)}" fill="#fbbf24" fill-rule="evenodd" stroke="#fff7cf" stroke-width="1.5"/>
+    ${ROULETTE_BOARD_ORDER.map((number, index) => {
+      const angle = (-90 + index * 18) * Math.PI / 180;
+      return `<text x="${(150 + 139 * Math.cos(angle)).toFixed(1)}" y="${(150 + 139 * Math.sin(angle)).toFixed(1)}" text-anchor="middle" dominant-baseline="central">${number}</text>`;
+    }).join("")}
+  </svg>`;
+}
+
+function isRouletteIntroVisible() {
+  const game = state.activeGame;
+  return Boolean(rouletteIntro && isDartRoulette(game) && !game.finishedAt
+    && rouletteIntro.gameId === game.id && rouletteIntro.playerId === game.players[game.currentIndex]?.id
+    && rouletteIntro.targetLabel === game.rouletteTarget?.label);
+}
+
+function renderRouletteIntro() {
+  const game = state.activeGame;
+  const player = game.players[game.currentIndex];
+  const target = rouletteIntro.settled ? game.rouletteTarget : rouletteIntro.currentTarget;
+  return `<div class="roulette-intro-backdrop">
+    <section class="roulette-intro-card" role="dialog" aria-modal="true" aria-labelledby="roulette-intro-title" aria-describedby="roulette-intro-caption">
+      <p class="roulette-kicker">DartMix &middot; Runde ${game.rouletteRound}</p>
+      <h2 id="roulette-intro-title">${escapeHtml(player.name)}: Dein Zielfeld</h2>
+      ${renderRouletteBoard(target)}
+      <p id="roulette-intro-caption" class="roulette-caption" aria-live="polite">${rouletteIntro.settled ? `Treffe ${escapeHtml(rouletteTargetName(game.rouletteTarget))} in drei Darts` : "Das Zielfeld wird ausgelost ..."}</p>
+      <button class="roulette-intro-skip" data-action="skip-roulette-intro">${rouletteIntro.settled ? "Los geht's" : "Animation ueberspringen"}</button>
+    </section>
+  </div>`;
+}
+
+function clearRouletteIntro() {
+  rouletteIntroRunId += 1;
+  window.clearTimeout(rouletteIntroTimer);
+  rouletteIntroTimer = null;
+  rouletteIntro = null;
+}
+
+function closeRouletteIntro() {
+  if (!rouletteIntro) return;
+  clearRouletteIntro();
+  renderOverlayRoot();
+  window.scrollTo?.(0, 0);
+}
+
+function settleRouletteIntro(runId = rouletteIntroRunId) {
+  if (runId !== rouletteIntroRunId || !isRouletteIntroVisible() || rouletteIntro.settled) return;
+  window.clearTimeout(rouletteIntroTimer);
+  rouletteIntroTimer = null;
+  rouletteIntro.settled = true;
+  rouletteIntro.currentTarget = state.activeGame.rouletteTarget;
+  const path = app.querySelector(".roulette-highlight");
+  if (path) path.setAttribute("d", rouletteHighlightPath(rouletteIntro.currentTarget));
+  const board = app.querySelector(".roulette-board");
+  if (board) board.setAttribute("aria-label", `Dartscheibe, markiert: ${rouletteTargetName(rouletteIntro.currentTarget)}`);
+  const caption = app.querySelector(".roulette-caption");
+  if (caption) caption.textContent = `Treffe ${rouletteTargetName(rouletteIntro.currentTarget)} in drei Darts`;
+  const button = app.querySelector(".roulette-intro-skip");
+  if (button) button.textContent = "Los geht's";
+  rouletteIntroTimer = window.setTimeout(() => {
+    if (runId === rouletteIntroRunId) closeRouletteIntro();
+  }, 950);
+}
+
+function skipRouletteIntro() {
+  if (!isRouletteIntroVisible()) return;
+  if (rouletteIntro.settled) closeRouletteIntro();
+  else settleRouletteIntro();
+}
+
+function openRouletteIntro(game) {
+  if (!isDartRoulette(game) || game.finishedAt) return;
+  clearRouletteIntro();
+  const runId = rouletteIntroRunId;
+  const targets = getRouletteTargets(game.rouletteScope);
+  const reducedMotion = prefersReducedMotion();
+  rouletteIntro = {
+    gameId: game.id,
+    playerId: game.players[game.currentIndex].id,
+    targetLabel: game.rouletteTarget.label,
+    currentTarget: reducedMotion ? game.rouletteTarget : targets[Math.floor(Math.random() * targets.length)],
+    settled: reducedMotion
+  };
+  renderOverlayRoot();
+  app.querySelector(".roulette-intro-skip")?.focus();
+  if (reducedMotion) {
+    rouletteIntroTimer = window.setTimeout(() => {
+      if (runId === rouletteIntroRunId) closeRouletteIntro();
+    }, 1000);
+    return;
+  }
+  let step = 0;
+  const delays = [...Array(19).fill(42), 65, 85, 110, 145, 190, 250, 320];
+  const advance = () => {
+    if (runId !== rouletteIntroRunId || !isRouletteIntroVisible() || rouletteIntro.settled) return;
+    if (step >= delays.length) {
+      settleRouletteIntro(runId);
+      return;
+    }
+    const target = targets[Math.floor(Math.random() * targets.length)];
+    rouletteIntro.currentTarget = target;
+    app.querySelector(".roulette-highlight")?.setAttribute("d", rouletteHighlightPath(target));
+    step += 1;
+    rouletteIntroTimer = window.setTimeout(advance, delays[step - 1]);
+  };
+  advance();
+}
+
 function refreshModePicker(focusSelector) {
   const overlay = app.querySelector("#overlay-root");
   if (overlay) overlay.innerHTML = renderOverlays();
@@ -833,6 +1017,7 @@ function renderGuestOption(player) {
 
 function renderActiveGame() {
   const game = state.activeGame;
+  if (isDartRoulette(game)) return renderRouletteGame(game);
   const current = game.players[game.currentIndex];
   const isFinished = Boolean(game.finishedAt);
   const throws = game.currentThrows || [];
@@ -917,6 +1102,49 @@ function renderActiveGame() {
       ${state.message ? `<div class="message">${escapeHtml(state.message)}</div>` : ""}
     </section>
   `;
+}
+
+function renderRouletteGame(game) {
+  const current = game.players[game.currentIndex];
+  const throws = game.currentThrows || [];
+  const hit = throws.some((dart) => isRouletteHit(dart, game.rouletteTarget));
+  const canAdd = !hit && throws.length < 3;
+  const solo = game.players.length === 1;
+  const winner = game.players.find((player) => player.id === game.winnerId);
+  return `<section class="game-board roulette-game">
+    ${game.finishedAt ? `<div class="winner">
+      <div class="winner-line">${winner ? renderAvatar(winner, "small", "winner") : ""}<h2>${winner ? `${escapeHtml(winner.name)} gewinnt!` : "DartRoulette beendet"}</h2></div>
+      <p>${solo ? `${game.players[0].rouletteSurvived} ${game.players[0].rouletteSurvived === 1 ? "Runde" : "Runden"} geschafft. ` : ""}DartMix wird ohne Statistik und Spielhistorie gespielt.</p>
+      <div class="actions"><button class="primary" data-action="roulette-rematch">Noch eine Runde</button><button class="secondary" data-action="new-game">Neues Spiel</button></div>
+    </div>` : ""}
+    <section class="roulette-status" aria-label="DartRoulette Spielstand">
+      <div class="roulette-status-head"><span class="small-pill">DartRoulette</span><strong>Runde ${game.rouletteRound}</strong><span class="small-pill">${game.rouletteScope === "all" ? "Alle Felder" : "Nur Single"}</span></div>
+      ${!game.finishedAt ? `<div class="roulette-target-line"><span>${escapeHtml(current.name)} &middot; Zielfeld</span><strong>${escapeHtml(rouletteTargetName(game.rouletteTarget))}</strong></div>` : ""}
+      <div class="roulette-player-list">${game.players.map((player, index) => `<div class="roulette-player ${index === game.currentIndex && !game.finishedAt ? "active" : ""} ${player.rouletteEliminated ? "eliminated" : ""}">
+        ${renderAvatar(player, "tiny")}<strong>${escapeHtml(player.name)}</strong><span>${player.rouletteEliminated ? "Raus" : game.roulettePending.includes(player.id) ? "Noch dran" : "Weiter"}</span>
+      </div>`).join("")}</div>
+    </section>
+    ${!game.finishedAt ? `<div class="turn-panel">
+      <div class="turn-head"><div><p class="hint" style="color:rgba(255,255,255,.72)">Am Zug</p><div class="turn-player">${escapeHtml(current.name)}</div></div><span class="small-pill">${hit ? "Getroffen!" : `${3 - throws.length} Darts uebrig`}</span></div>
+      <div class="throw-summary" aria-label="Zielfeld und aktuelle Eingabe">
+        <div class="throw-entry"><span class="throw-label">Eingabe</span><div class="throw-list">${[0,1,2].map((index) => `<span class="${throws[index] ? "" : "is-empty"}">${throws[index] ? escapeHtml(throws[index].label) : `${index + 1}. Dart`}</span>`).join("")}</div></div>
+        <div class="throw-projection"><span class="throw-label">Ziel</span><strong>${escapeHtml(rouletteTargetName(game.rouletteTarget))}</strong></div>
+      </div>
+      <p class="roulette-rule">${game.rouletteScope === "all" ? "Nur genau dieses Feld zaehlt: Single, Double, Triple, Bull und Bullseye sind verschieden." : "Nur das ausgeloste Single-Feld zaehlt."}</p>
+      <div class="dart-pad" aria-label="Dartfelder">
+        <div class="dart-section"><div class="pad-title">Single</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number, String(number), "single", canAdd)).join("")}</div></div>
+        <div class="dart-section"><div class="pad-title">Double</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 2, `D${number}`, "double", canAdd)).join("")}</div></div>
+        <div class="dart-section"><div class="pad-title">Triple</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 3, `T${number}`, "triple", canAdd)).join("")}</div></div>
+        <div class="bull-grid">${renderDartButton(25, "Bull", "bull", canAdd)}${renderDartButton(50, "Bullseye", "bullseye", canAdd)}${renderDartButton(0, "Vorbei", "miss", canAdd)}</div>
+      </div>
+      <div class="actions"><button class="primary" data-action="submit-round" ${!hit && throws.length < 3 ? "disabled" : ""}>${hit ? "Treffer bestaetigen" : "Drei Wuerfe bestaetigen"}</button>
+        <button class="secondary" data-action="remove-last-dart" ${throws.length ? "" : "disabled"}>Wurf zurueck</button>
+        <button class="secondary" data-action="undo" ${game.history.length ? "" : "disabled"}>Runde zurueck</button>
+        <button class="ghost" data-action="clear-throws" ${throws.length ? "" : "disabled"}>Runde leeren</button>
+        <button class="danger" data-action="cancel-game">Spiel abbrechen</button></div>
+    </div>` : ""}
+    ${state.message ? `<div class="message">${escapeHtml(state.message)}</div>` : ""}
+  </section>`;
 }
 
 function renderSharedScore(game) {
@@ -2128,6 +2356,11 @@ function normalizeRemoteActiveGame(data) {
     finishedAt: normalizeDateValue(data.finishedAt) || null,
     startingIndex: Math.max(0, Math.min(Number(data.startingIndex || 0), base.players.length - 1)),
     sharedRemaining: Number(data.sharedRemaining ?? base.startScore),
+    rouletteScope: data.rouletteScope === "all" ? "all" : "single",
+    rouletteRound: Math.max(1, Number(data.rouletteRound || 1)),
+    rouletteRoundPlayers: Array.isArray(data.rouletteRoundPlayers) ? data.rouletteRoundPlayers : base.players.map((player) => player.id),
+    roulettePending: Array.isArray(data.roulettePending) ? data.roulettePending : base.players.map((player) => player.id),
+    rouletteTarget: data.rouletteTarget || null,
     dartsThrown: Number(data.dartsThrown || 0),
     lastSavedRound: Array.isArray(data.lastSavedRound) ? data.lastSavedRound : [],
     currentIndex: Math.max(0, Math.min(Number(data.currentIndex || 0), base.players.length - 1)),
@@ -2162,6 +2395,8 @@ function normalizeRemoteMatch(id, data) {
       color: player.color || colors[index % colors.length],
       avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length]),
       guest: Boolean(player.guest),
+      rouletteEliminated: Boolean(player.rouletteEliminated),
+      rouletteSurvived: Number(player.rouletteSurvived || 0),
       remaining: Number(player.remaining || 0),
       rounds: Number(player.rounds || 0),
       throwsTotal: Number(player.throwsTotal || 0),
@@ -2218,6 +2453,11 @@ function prepareActiveGameForRemote(game) {
     id: game.id,
     mode: game.mode || "classic",
     sharedRemaining: isRestjagd(game) ? game.sharedRemaining : null,
+    rouletteScope: isDartRoulette(game) ? game.rouletteScope : null,
+    rouletteRound: isDartRoulette(game) ? game.rouletteRound : null,
+    rouletteRoundPlayers: isDartRoulette(game) ? game.rouletteRoundPlayers : null,
+    roulettePending: isDartRoulette(game) ? game.roulettePending : null,
+    rouletteTarget: isDartRoulette(game) ? game.rouletteTarget : null,
     startingIndex: game.startingIndex || 0,
     dartsThrown: game.dartsThrown || 0,
     lastSavedRound: game.lastSavedRound || [],
@@ -2247,11 +2487,18 @@ function getTime(value) {
 
 function createGame(players, setup, startingIndex = 0, revision = 0) {
   const restjagd = setup.mode === "restjagd";
-  const startScore = restjagd ? drawRestjagdNumber() : setup.startScore;
+  const roulette = setup.mode === "dartroulette";
+  const startScore = restjagd ? drawRestjagdNumber() : roulette ? 0 : setup.startScore;
+  const rouletteScope = setup.rouletteScope === "all" ? "all" : "single";
   return {
     id: createId(),
-    mode: restjagd ? "restjagd" : "classic",
+    mode: restjagd ? "restjagd" : roulette ? "dartroulette" : "classic",
     startScore,
+    rouletteScope: roulette ? rouletteScope : null,
+    rouletteRound: roulette ? 1 : null,
+    rouletteRoundPlayers: roulette ? players.map((player) => player.id) : null,
+    roulettePending: roulette ? players.map((player) => player.id) : null,
+    rouletteTarget: roulette ? drawRouletteTarget(rouletteScope) : null,
     sharedRemaining: restjagd ? startScore : null,
     dartsThrown: 0,
     checkout: setup.checkout === "double" ? "double" : "straight",
@@ -2272,6 +2519,8 @@ function createGame(players, setup, startingIndex = 0, revision = 0) {
       color: player.color,
       avatar: normalizeAvatar(player.avatar, player.color),
       guest: Boolean(player.guest),
+      rouletteEliminated: false,
+      rouletteSurvived: 0,
       remaining: restjagd ? 0 : startScore,
       rounds: 0,
       throwsTotal: 0,
@@ -2296,6 +2545,7 @@ function startGame() {
   state.message = "";
   saveAndRender();
   if (isRestjagd(state.activeGame)) openRestjagdIntro(state.activeGame);
+  if (isDartRoulette(state.activeGame)) openRouletteIntro(state.activeGame);
   queueActiveGameSync(-1);
 }
 
@@ -2311,9 +2561,88 @@ function startRestjagdRematch() {
   queueActiveGameSync(expectedRevision);
 }
 
+function startRouletteRematch() {
+  const game = state.activeGame;
+  if (!isDartRoulette(game) || !game.finishedAt) return;
+  const expectedRevision = Number(game.revision || 0);
+  const startingIndex = (game.startingIndex + 1) % game.players.length;
+  state.activeGame = createGame(game.players, game, startingIndex, expectedRevision + 1);
+  state.message = "";
+  saveAndRenderMain();
+  openRouletteIntro(state.activeGame);
+  queueActiveGameSync(expectedRevision);
+}
+
+function submitRouletteTurn() {
+  const game = state.activeGame;
+  if (!isDartRoulette(game) || game.finishedAt || !game.currentThrows.length || isRouletteIntroVisible()) return;
+  const expectedRevision = Number(game.revision || 0);
+  const player = game.players[game.currentIndex];
+  const hit = game.currentThrows.some((dart) => isRouletteHit(dart, game.rouletteTarget));
+  if (!hit && game.currentThrows.length < 3) {
+    state.message = "Drei Darts werfen oder den Treffer eingeben.";
+    renderMainOnly();
+    return;
+  }
+  game.history.push(createUndoSnapshot(game));
+  game.lastSavedRound = clone(game.currentThrows);
+  game.currentThrows = [];
+  game.roulettePending = game.roulettePending.filter((id) => id !== player.id);
+  if (hit) player.rouletteSurvived += 1;
+  else player.rouletteEliminated = true;
+  game.lastReaction = { playerId: player.id, type: hit ? "big" : "bust" };
+  state.message = hit ? `${player.name} trifft ${rouletteTargetName(game.rouletteTarget)}!` : `${player.name} scheidet aus.`;
+
+  if (game.roulettePending.length) {
+    const count = game.players.length;
+    for (let offset = 1; offset <= count; offset += 1) {
+      const index = (game.currentIndex + offset) % count;
+      if (game.roulettePending.includes(game.players[index].id)) {
+        game.currentIndex = index;
+        break;
+      }
+    }
+  } else {
+    const survivors = game.players.filter((entry) => !entry.rouletteEliminated);
+    if (game.players.length === 1) {
+      if (!survivors.length) {
+        game.finishedAt = new Date().toISOString();
+        game.winnerId = null;
+      }
+    } else if (survivors.length === 1) {
+      game.finishedAt = new Date().toISOString();
+      game.winnerId = survivors[0].id;
+    } else if (survivors.length === 0) {
+      // Everyone still in at the start of this round failed: those players get a fresh tie-break round.
+      game.players.forEach((entry) => {
+        if (game.rouletteRoundPlayers.includes(entry.id)) entry.rouletteEliminated = false;
+      });
+      state.message = "Gleichstand! Alle dieser Runde bekommen ein neues Zielfeld.";
+    }
+    if (!game.finishedAt) {
+      game.rouletteRound += 1;
+      game.rouletteRoundPlayers = game.players.filter((entry) => !entry.rouletteEliminated).map((entry) => entry.id);
+      game.roulettePending = [...game.rouletteRoundPlayers];
+      const nextIndex = game.players.findIndex((entry) => game.roulettePending.includes(entry.id));
+      game.currentIndex = nextIndex < 0 ? 0 : nextIndex;
+    }
+  }
+  if (!game.finishedAt) game.rouletteTarget = drawRouletteTarget(game.rouletteScope);
+  game.revision = expectedRevision + 1;
+  game.updatedAt = new Date().toISOString();
+  game.deviceId = DEVICE_ID;
+  saveAndRenderMain();
+  if (!game.finishedAt) openRouletteIntro(game);
+  queueActiveGameSync(expectedRevision);
+}
+
 function submitRound() {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
+  if (isDartRoulette(game)) {
+    submitRouletteTurn();
+    return;
+  }
   const expectedRevision = Number(game.revision || 0);
   const turn = evaluateTurn(game);
   const throws = turn.usedDarts;
@@ -2397,6 +2726,7 @@ function undo() {
   };
   state.message = "Letzte Eingabe wurde zurueckgenommen.";
   saveAndRenderMain();
+  if (isDartRoulette(state.activeGame)) openRouletteIntro(state.activeGame);
   queueActiveGameSync(expectedRevision);
 }
 
@@ -2410,7 +2740,7 @@ function addDart(value, label, type) {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
   if (!game.currentThrows) game.currentThrows = [];
-  if (evaluateTurn(game).terminal) return;
+  if (isDartRoulette(game) ? game.currentThrows.length >= 3 || game.currentThrows.some((dart) => isRouletteHit(dart, game.rouletteTarget)) : evaluateTurn(game).terminal) return;
   game.currentThrows.push({ value: Number(value), label, type });
   state.message = "";
   saveAndRenderMain();
@@ -2422,6 +2752,15 @@ function addDart(value, label, type) {
     pressedButton.addEventListener("animationend", () => {
       pressedButton.classList.remove("dart-feedback");
     }, { once: true });
+  }
+  if (isDartRoulette(game)) {
+    if (isRouletteHit(game.currentThrows.at(-1), game.rouletteTarget)) {
+      const confirmedDart = game.currentThrows.at(-1);
+      window.setTimeout(() => {
+        if (state.activeGame === game && game.currentThrows.at(-1) === confirmedDart) submitRouletteTurn();
+      }, 350);
+    }
+    return;
   }
   if (evaluateTurn(game).terminal) {
     // Let the confirmation show before scrolling the keypad out of view.
@@ -2653,6 +2992,7 @@ function cancelGame() {
   if (!state.activeGame) return;
   if (!confirm("Aktuelles Spiel abbrechen?")) return;
   const expectedRevision = Number(state.activeGame.revision || 0);
+  clearRouletteIntro();
   state.activeGame = null;
   state.message = "";
   saveAndRender();
@@ -2688,6 +3028,7 @@ document.addEventListener("click", (event) => {
   const action = button.dataset.action;
 
   if (action === "skip-restjagd-intro") skipRestjagdIntro();
+  if (action === "skip-roulette-intro") skipRouletteIntro();
   if (action === "set-view") {
     state.activeView = button.dataset.view;
     if (state.activeView !== "stats") activeStatsPlayerId = null;
@@ -2705,11 +3046,16 @@ document.addEventListener("click", (event) => {
     pendingModeId = button.dataset.modeId;
     refreshModePicker(`[data-mode-id="${pendingModeId}"]`);
   }
-  if (action === "set-checkout" && !state.activeGame && !getSetupMode().fixedCheckout) {
+  if (action === "set-checkout" && !state.activeGame && !getSetupMode().fixedCheckout && getSetupMode().kind !== "dartroulette") {
     state.setup.checkout = button.dataset.checkout === "double" ? "double" : "straight";
     saveAndRender();
   }
+  if (action === "set-roulette-scope" && !state.activeGame && getSetupMode().kind === "dartroulette") {
+    state.setup.rouletteScope = button.dataset.scope === "all" ? "all" : "single";
+    saveAndRender();
+  }
   if (action === "restjagd-rematch") startRestjagdRematch();
+  if (action === "roulette-rematch") startRouletteRematch();
   if (action === "toggle-player") togglePlayer(button.dataset.playerId);
   if (action === "remove-guest") removeGuest(button.dataset.playerId);
   if (action === "start-game") startGame();
@@ -2721,6 +3067,7 @@ document.addEventListener("click", (event) => {
   if (action === "cancel-game") cancelGame();
   if (action === "new-game") {
     const expectedRevision = Number(state.activeGame && state.activeGame.revision || 0);
+    clearRouletteIntro();
     state.activeGame = null;
     state.message = "";
     saveAndRender();
