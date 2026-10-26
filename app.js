@@ -87,6 +87,7 @@ const defaultState = {
     lastResetAt: "",
     deletedPlayerIds: [],
     matchTombstones: {},
+    retiredGameIds: [],
     pending: { players: false, matches: [], activeGame: null, activeClear: null }
   },
   activeGame: null,
@@ -383,6 +384,7 @@ function normalizeSync(sync) {
     lastResetAt: sync && sync.lastResetAt ? normalizeDateValue(sync.lastResetAt) : "",
     deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : [],
     matchTombstones: sync && sync.matchTombstones && typeof sync.matchTombstones === "object" ? sync.matchTombstones : {},
+    retiredGameIds: Array.isArray(sync?.retiredGameIds) ? [...new Set(sync.retiredGameIds.map(String))].slice(-64) : [],
     pending: {
       players: Boolean(pending.players),
       matches: Array.isArray(pending.matches) ? [...new Set(pending.matches.map(String))] : [],
@@ -2044,6 +2046,7 @@ function changeFamilyCode(code) {
   state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
   state.sync.matchTombstones = {};
+  state.sync.retiredGameIds = [];
   knownRemoteMatchIds = new Set();
   state.sync.pending = { players: true, matches: [], activeGame: null, activeClear: null };
   stopFamilyResetWatcher();
@@ -2131,6 +2134,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
       lastResetAt: resetAt,
       deletedPlayerIds: [],
       matchTombstones: {},
+      retiredGameIds: [],
       pending: { players: false, matches: [], activeGame: null, activeClear: null }
     },
     activeGame: null,
@@ -2286,6 +2290,7 @@ function watchActiveGame(familyRef) {
     if (!snapshot.exists) return;
     const remoteGame = normalizeRemoteActiveGame(snapshot.data());
     if (!remoteGame) return;
+    if ((state.sync.retiredGameIds || []).includes(remoteGame.id)) return;
     if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === remoteGame.id) return;
     const localGame = state.activeGame;
     if (localGame && (localGame.supersededGameIds || []).includes(remoteGame.id)) return;
@@ -2307,6 +2312,7 @@ function watchActiveGame(familyRef) {
       activeGameSyncPendingRevision = null;
     }
     state.activeGame = remoteGame;
+    state.sync.retiredGameIds = [...new Set([...(state.sync.retiredGameIds || []), ...(remoteGame.supersededGameIds || [])])].slice(-64);
     state.message = "Die laufende Partie wurde von einem anderen Geraet aktualisiert.";
     saveAndRenderMain();
   }, (error) => {
@@ -2630,15 +2636,19 @@ async function syncActiveGame() {
   const expectedRevision = activeGameSyncPendingRevision;
   activeGameSyncPendingRevision = null;
   const game = clone(state.activeGame);
+  const familyCode = state.sync.familyCode;
+  const superseded = () => state.activeGame?.id !== game.id
+    || Number(state.activeGame?.revision || 0) !== Number(game.revision || 0)
+    || state.sync.familyCode !== familyCode;
   activeGameSyncGameId = game.id;
 
   try {
     const db = await ensureFirebaseSession();
-    const activeGameRef = db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current");
+    const activeGameRef = db.collection("families").doc(familyCode).collection("activeGames").doc("current");
     await db.runTransaction(async (transaction) => {
-      if (state.activeGame?.id !== game.id) throw new Error("ACTIVE_GAME_SUPERSEDED");
+      if (superseded()) throw new Error("ACTIVE_GAME_SUPERSEDED");
       const snapshot = await transaction.get(activeGameRef);
-      if (state.activeGame?.id !== game.id) throw new Error("ACTIVE_GAME_SUPERSEDED");
+      if (superseded()) throw new Error("ACTIVE_GAME_SUPERSEDED");
       const remoteRevision = snapshot.exists ? Number(snapshot.data().revision || 0) : -1;
       const replacesRemote = snapshot.exists && (game.supersededGameIds || []).includes(snapshot.data().id);
       if (snapshot.exists && !replacesRemote && (snapshot.data().id !== game.id || remoteRevision > expectedRevision)) {
@@ -2659,12 +2669,12 @@ async function syncActiveGame() {
     }
     setSyncRuntime("synced", "Laufende Partie synchron.", "", false);
   } catch (error) {
-    if (error?.message === "ACTIVE_GAME_SUPERSEDED" || state.activeGame?.id !== game.id) return;
+    if (error?.message === "ACTIVE_GAME_SUPERSEDED" || superseded()) return;
     if (error && error.message === "ACTIVE_GAME_CONFLICT") {
       try {
         const db = await ensureFirebaseSession();
         const snapshot = await db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current").get();
-        if (state.activeGame?.id !== game.id) return;
+        if (superseded()) return;
         const remoteGame = snapshot.exists ? normalizeRemoteActiveGame(snapshot.data()) : null;
         if (remoteGame) keepLocalActiveGame(remoteGame);
         else setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
@@ -2902,7 +2912,7 @@ function createGame(players, setup, startingIndex = 0, revision = 0) {
   return {
     id: createId(),
     mode: restjagd ? "restjagd" : roulette ? "dartroulette" : "classic",
-    supersededGameIds: setup.id ? [...new Set([...(setup.supersededGameIds || []), setup.id])].slice(-64) : [],
+    supersededGameIds: [...new Set([...(state.sync.retiredGameIds || []), ...(setup.supersededGameIds || []), ...(setup.id ? [setup.id] : [])])].slice(-64),
     startScore,
     rouletteScope: roulette ? rouletteScope : null,
     rouletteRound: roulette ? 1 : null,
@@ -2965,6 +2975,7 @@ function startRestjagdRematch() {
   if (!isRestjagd(game) || !game.finishedAt || !game.players.length) return;
   const expectedRevision = Number(game.revision || 0);
   const startingIndex = ((game.startingIndex || 0) + 1) % game.players.length;
+  retireGame(game);
   state.activeGame = createGame(game.players, game, startingIndex, expectedRevision + 1);
   state.message = "";
   saveAndRenderMain();
@@ -2977,6 +2988,7 @@ function startRouletteRematch() {
   if (!isDartRoulette(game) || !game.finishedAt) return;
   const expectedRevision = Number(game.revision || 0);
   const startingIndex = (game.startingIndex + 1) % game.players.length;
+  retireGame(game);
   state.activeGame = createGame(game.players, game, startingIndex, expectedRevision + 1);
   state.message = "";
   saveAndRenderMain();
@@ -3526,10 +3538,25 @@ function deletePlayer(id) {
 function cancelGame() {
   if (!state.activeGame) return;
   if (!confirm("Aktuelles Spiel abbrechen?")) return;
+  leaveGame();
+}
+
+function retireGame(game) {
+  state.sync.retiredGameIds = [...new Set([...(state.sync.retiredGameIds || []), ...(game.supersededGameIds || []), game.id])].slice(-64);
+}
+
+function leaveGame() {
+  if (!state.activeGame) return;
   const expectedRevision = Number(state.activeGame.revision || 0);
   const gameId = state.activeGame.id;
+  retireGame(state.activeGame);
   checkoutHelpOpen = false;
+  window.clearTimeout(rouletteHitTimer);
+  window.clearTimeout(activeGameSyncTimer);
+  activeGameSyncPendingRevision = null;
   clearRouletteIntro();
+  clearRestjagdIntroTimers();
+  restjagdIntro = null;
   state.activeGame = null;
   state.message = "";
   saveAndRender();
@@ -3617,16 +3644,7 @@ document.addEventListener("click", (event) => {
   if (action === "submit-round") submitRound();
   if (action === "undo") undo();
   if (action === "cancel-game") cancelGame();
-  if (action === "new-game") {
-    const expectedRevision = Number(state.activeGame && state.activeGame.revision || 0);
-    const gameId = state.activeGame && state.activeGame.id;
-    checkoutHelpOpen = false;
-    clearRouletteIntro();
-    state.activeGame = null;
-    state.message = "";
-    saveAndRender();
-    clearRemoteActiveGame(expectedRevision, gameId);
-  }
+  if (action === "new-game") leaveGame();
   if (action === "open-avatar") openAvatarEditor(button.dataset.playerId);
   if (action === "close-avatar") closeAvatarEditor();
   if (action === "set-avatar") setAvatarPart(button.dataset.field, button.dataset.value);

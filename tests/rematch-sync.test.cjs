@@ -17,9 +17,9 @@ function harness(){
  const familyRef={collection:()=>({doc:()=>activeRef})};
  const db={collection:()=>({doc:()=>familyRef}),runTransaction:async callback=>callback({
   get:async()=>({exists:Boolean(remote),data:()=>clone(remote)}),
-  set:(ref,payload)=>{remote=clone(payload);writes.push(remote.id)}
+  set:(ref,payload)=>{remote=clone(payload);writes.push(remote.id)},delete:()=>{remote=null}
  })};ensureFirebaseSession=async()=>db;`);
- return {run,navigator,json:code=>JSON.parse(JSON.stringify(run(code)))};
+ return {run,navigator,storage,json:code=>JSON.parse(JSON.stringify(run(code)))};
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function restjagd(h){h.run('state.setup.mode="restjagd";state.setup.selectedPlayerIds=[state.players[0].id];startGame();clearRestjagdIntroTimers();restjagdIntro=null;state.activeGame.sharedRemaining=20;addDart(20,"20","single")')}
@@ -76,3 +76,57 @@ test('normalisation and sync preserve rematch ancestry and Roulette rematches us
  assert.equal(h.run('remote.id'),h.run('state.activeGame.id'));
  assert.doesNotMatch(h.run('renderOverlays()'),/Zwei Spielstände|Sync-Konflikt/);
 });
+
+const modes=['301','501','restjagd','dartroulette'];
+function startMode(h,mode){
+ h.run(`state.setup.mode=${JSON.stringify(['301','501'].includes(mode)?'classic':mode)};state.setup.startScore=${mode==='501'?501:301};state.setup.checkout="straight";state.setup.selectedPlayerIds=[state.players[0].id];startGame();clearRouletteIntro();clearRestjagdIntroTimers();restjagdIntro=null`);
+}
+function finishMode(h,mode){
+ if(mode==='dartroulette') h.run('state.activeGame.rouletteTarget={number:20,label:"20",value:20,type:"single"};addDart(0,"Vorbei","miss");addDart(0,"Vorbei","miss");addDart(0,"Vorbei","miss");submitRouletteTurn()');
+ else h.run(`${mode==='restjagd'?'state.activeGame.sharedRemaining':'state.activeGame.players[0].remaining'}=20;addDart(20,"20","single")`);
+}
+
+for(const from of modes) for(const to of modes){
+ test(`finished ${from} → new ${to}: old snapshots cannot restore the previous game`,async()=>{
+  const h=harness();await flush();startMode(h,from);finishMode(h,from);
+  assert.equal(h.run('Boolean(state.activeGame.finishedAt)'),true);
+  h.run('const previous=clone(state.activeGame);remote=clone(previous);watchActiveGame(familyRef);leaveGame();state.sync.pending.activeClear=null;emitActive({exists:true,data:()=>({...previous,deviceId:"delayed",revision:999})})');
+  assert.equal(h.run('state.activeGame'),null);
+  startMode(h,to);const id=h.run('state.activeGame.id');
+  assert.equal(h.run('state.activeGame.supersededGameIds.includes(previous.id)'),true);
+  h.navigator.onLine=true;await h.run('syncActiveGame()');await flush();
+  assert.equal(h.run('remote.id'),id);
+  h.run('state.sync.pending.activeClear=null;emitActive({exists:true,data:()=>({...previous,deviceId:"delayed",revision:999})})');
+  assert.equal(h.run('state.activeGame.id'),id);
+  assert.notEqual(h.run('getSyncDisplay().status'),'error');
+  assert.doesNotMatch(h.run('renderOverlays()'),/Zwei Spielstände|Sync-Konflikt/);
+ });
+}
+
+for(const mode of modes){
+ test(`${mode}: cancel, reload of saved sync data and delayed old response do not reopen a game`,async()=>{
+  const h=harness();await flush();startMode(h,mode);
+  h.run('const canceled=clone(state.activeGame);watchActiveGame(familyRef);cancelGame();state.sync=normalizeSync(JSON.parse(localStorage.getItem(STORAGE_KEY)).sync);state.sync.pending.activeClear=null;emitActive({exists:true,data:()=>({...canceled,deviceId:"delayed",revision:999})})');
+  assert.equal(h.run('state.activeGame'),null);
+  assert.equal(h.run('state.sync.retiredGameIds.includes(canceled.id)'),true);
+ });
+}
+
+for(const mode of ['301','501','restjagd']){
+ test(`${mode}: an in-flight earlier state cannot overwrite a later checkout correction`,async()=>{
+  const h=harness();await flush();startMode(h,mode);
+  if(mode==='restjagd')finishMode(h,mode);
+  h.run(`remote=clone(state.activeGame);let releaseWinner;let reads=0;
+   db.runTransaction=async callback=>callback({
+    get:async()=>{if(++reads===1)return new Promise(resolve=>{releaseWinner=()=>resolve({exists:true,data:()=>clone(remote)})});return {exists:Boolean(remote),data:()=>clone(remote)}},
+    set:(ref,payload)=>{remote=clone(payload);writes.push(remote.id)},delete:()=>{remote=null}
+   });`);
+  h.navigator.onLine=true;const winnerWrite=h.run('syncActiveGame()');await flush();
+  if(mode!=='restjagd')finishMode(h,mode);
+  h.run('setDartType("triple");releaseWinner()');await winnerWrite;await flush();await flush();
+  assert.equal(h.run('Boolean(state.activeGame.finishedAt)'),false);
+  assert.equal(h.run('Boolean(remote.finishedAt)'),false);
+  assert.equal(h.run('remote.revision'),h.run('state.activeGame.revision'));
+  assert.equal(h.run('state.matches.length'),0);
+ });
+}
