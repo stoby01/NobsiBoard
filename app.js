@@ -13,6 +13,14 @@ const firebaseConfig = {
 
 const colors = ["#0f766e", "#dc2626", "#2563eb", "#ca8a04", "#7c3aed", "#16a34a"];
 const dartNumbers = Array.from({ length: 20 }, (_, index) => index + 1);
+const checkoutDarts = [
+  ...dartNumbers.map((number) => ({ label: String(number), value: number, type: "single" })),
+  ...dartNumbers.map((number) => ({ label: `D${number}`, value: number * 2, type: "double" })),
+  ...dartNumbers.map((number) => ({ label: `T${number}`, value: number * 3, type: "triple" })),
+  { label: "Bull", value: 25, type: "bull" },
+  { label: "Bullseye", value: 50, type: "bullseye" }
+];
+const checkoutRouteCache = new Map();
 const featuredHistoryDarts = [
   { label: "T20", type: "triple" },
   { label: "T19", type: "triple" },
@@ -68,6 +76,7 @@ const defaultState = {
     mode: "classic",
     startScore: 501,
     checkout: "straight",
+    checkoutHelp: true,
     rouletteScope: "single",
     selectedPlayerIds: []
   },
@@ -76,7 +85,8 @@ const defaultState = {
     familyCode: DEFAULT_FAMILY_CODE,
     lastSyncedAt: "",
     lastResetAt: "",
-    deletedPlayerIds: []
+    deletedPlayerIds: [],
+    pending: { players: false, matches: [], activeGame: null, activeClear: null }
   },
   activeGame: null,
   welcomeSeen: false,
@@ -89,6 +99,7 @@ let avatarEditorPlayerId = null;
 let activeStatsPlayerId = null;
 let activeMatchId = null;
 let activeGlobalHitCategory = "";
+let checkoutHelpOpen = false;
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
 let familyCodeEditorOpen = false;
@@ -119,13 +130,19 @@ let familyResetUnsubscribe = null;
 let familyResetListenCode = "";
 let familyDataUnsubscribes = [];
 let familyDataListenCode = "";
+let familyListenerFailure = "";
 let activeGameUnsubscribe = null;
 let activeGameListenCode = "";
+let activeGameListenerFailure = "";
 let activeGameSyncTimer = null;
 let activeGameSyncRunning = false;
+let activeGameSyncGameId = "";
 let activeGameSyncPendingRevision = null;
 let syncTimer = null;
 let syncRunning = false;
+let familySyncRevision = 0;
+let activeGameConflict = null;
+let localSaveFailed = false;
 let syncRuntime = {
   status: navigator.onLine ? "syncing" : "offline",
   detail: navigator.onLine ? "Familien-Daten werden geladen." : "Offline. Ergebnisse werden spaeter automatisch gesendet.",
@@ -219,6 +236,7 @@ function normalizeSetup(setup = {}) {
   result.mode = ["restjagd", "dartroulette"].includes(result.mode) ? result.mode : "classic";
   result.startScore = Number(result.startScore) === 301 ? 301 : 501;
   result.checkout = result.checkout === "double" ? "double" : "straight";
+  result.checkoutHelp = result.checkoutHelp !== false;
   result.rouletteScope = result.rouletteScope === "all" ? "all" : "single";
   result.selectedPlayerIds = Array.isArray(result.selectedPlayerIds) ? result.selectedPlayerIds : [];
   return result;
@@ -296,15 +314,76 @@ function evaluateTurn(game, darts = game.currentThrows || []) {
   return { remaining, score, bust, finished, usedDarts, terminal: bust || finished || usedDarts.length === 3 };
 }
 
+function getCheckoutRoutes(remaining, dartsLeft, checkout) {
+  if (!Number.isInteger(remaining) || remaining <= 0 || dartsLeft < 1 || dartsLeft > 3
+    || remaining > (checkout === "double" ? 170 : 180)) return [];
+  const key = `${remaining}:${dartsLeft}:${checkout}`;
+  if (checkoutRouteCache.has(key)) return checkoutRouteCache.get(key);
+  const finishes = checkout === "double"
+    ? checkoutDarts.filter((dart) => dart.type === "double" || dart.type === "bullseye")
+    : checkoutDarts;
+  const byValue = new Map();
+  checkoutDarts.forEach((dart) => {
+    if (!byValue.has(dart.value)) byValue.set(dart.value, []);
+    byValue.get(dart.value).push(dart);
+  });
+  const routes = [];
+  const seen = new Set();
+  const add = (darts) => {
+    const first = darts.slice(0, -1).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+    const route = [...first, darts[darts.length - 1]];
+    const routeKey = route.map((dart) => dart.label).join("-");
+    if (!seen.has(routeKey)) {
+      seen.add(routeKey);
+      routes.push(route);
+    }
+  };
+  finishes.forEach((finish) => {
+    const beforeFinish = remaining - finish.value;
+    if (beforeFinish < 0) return;
+    if (beforeFinish === 0) add([finish]);
+    if (dartsLeft >= 2) (byValue.get(beforeFinish) || []).forEach((first) => add([first, finish]));
+    if (dartsLeft >= 3) checkoutDarts.forEach((first) => {
+      (byValue.get(beforeFinish - first.value) || []).forEach((second) => add([first, second, finish]));
+    });
+  });
+  const preferredDoubles = [20, 16, 18, 12, 10, 8, 4, 6, 14, 2, 1, 19, 17, 15, 13, 11, 9, 7, 5, 3];
+  const finishRank = (dart) => dart.type === "double"
+    ? preferredDoubles.indexOf(dart.value / 2)
+    : dart.type === "bullseye" ? 25 : dart.type === "single" ? 30 - dart.value / 20 : 40;
+  routes.sort((a, b) => a.length - b.length
+    || finishRank(a.at(-1)) - finishRank(b.at(-1))
+    || b[0].value - a[0].value
+    || a.map((dart) => dart.label).join().localeCompare(b.map((dart) => dart.label).join()));
+  const best = routes.slice(0, 5);
+  checkoutRouteCache.set(key, best);
+  return best;
+}
+
+function formatCheckoutRoute(route) {
+  return route.map((dart) => dart.label).join(" → ");
+}
+
 function normalizeSync(sync) {
   const familyCode = normalizeFamilyCode(sync && sync.familyCode ? sync.familyCode : DEFAULT_FAMILY_CODE);
+  const pending = sync && sync.pending || {};
   return {
     ...defaultState.sync,
     ...(sync || {}),
     enabled: true,
     familyCode,
     lastResetAt: sync && sync.lastResetAt ? normalizeDateValue(sync.lastResetAt) : "",
-    deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : []
+    deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : [],
+    pending: {
+      players: Boolean(pending.players),
+      matches: Array.isArray(pending.matches) ? [...new Set(pending.matches.map(String))] : [],
+      activeGame: pending.activeGame && pending.activeGame.id ? {
+        id: String(pending.activeGame.id),
+        revision: Number(pending.activeGame.revision || 0),
+        baseRevision: Number(pending.activeGame.baseRevision ?? Number(pending.activeGame.revision || 0) - 1)
+      } : null,
+      activeClear: pending.activeClear && pending.activeClear.id ? { id: String(pending.activeClear.id), revision: Number(pending.activeClear.revision || 0) } : null
+    }
   };
 }
 
@@ -335,7 +414,9 @@ function normalizeAvatar(avatar, fallbackColor) {
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, matches: getClassicMatches() }));
+    localSaveFailed = false;
   } catch {
+    localSaveFailed = true;
     state.message = "Speicher ist voll. Bitte alte Browserdaten pruefen.";
   }
 }
@@ -362,12 +443,43 @@ function isSyncEnabled() {
 }
 
 function getSyncLabel() {
-  if (!isSyncEnabled()) return "Familie";
-  if (syncRuntime.status === "syncing") return "Wird synchronisiert";
-  if (syncRuntime.status === "synced") return "Synchron";
-  if (syncRuntime.status === "offline") return "Offline bereit";
-  if (syncRuntime.status === "error") return "Sync-Fehler";
-  return "Familie verbunden";
+  return getSyncDisplay().label;
+}
+
+function getSyncDisplay() {
+  if (localSaveFailed) return { status: "error", label: "Speichern fehlgeschlagen", detail: "Gerätespeicher prüfen. Die letzte Eingabe wurde nicht sicher gespeichert." };
+  if (!isSyncEnabled()) return { status: "pending", label: "Nur lokal", detail: "Familien-Sync ist nicht eingerichtet." };
+  const pending = state.sync.pending || {};
+  const parts = [];
+  if (pending.players || (state.sync.deletedPlayerIds || []).length) parts.push("Spieleränderungen");
+  if ((pending.matches || []).length) parts.push(`${pending.matches.length} ${pending.matches.length === 1 ? "Spiel" : "Spiele"}`);
+  if (pending.activeGame) parts.push("laufende Partie");
+  if (pending.activeClear) parts.push("Partieabschluss");
+  const localInput = Boolean(state.activeGame && !state.activeGame.finishedAt && (state.activeGame.currentThrows || []).length);
+  const waiting = parts.length ? `Noch nicht online bestätigt: ${parts.join(" · ")}.` : "";
+  if (activeGameConflict) return { status: "error", label: "Sync-Konflikt", detail: syncRuntime.detail || "Bitte einen Spielstand wählen." };
+  if (!navigator.onLine) return {
+    status: "offline",
+    label: parts.length || localInput ? "Offline · lokal gespeichert" : "Offline bereit",
+    detail: waiting || (localInput ? "Aktuelle Eingabe ist nur auf diesem Gerät." : "Verbindung fehlt. Beim nächsten Start wird erneut geprüft.")
+  };
+  if (familyListenerFailure || activeGameListenerFailure) return {
+    status: "error", label: "Sync-Fehler", detail: familyListenerFailure || activeGameListenerFailure
+  };
+  if (syncRuntime.status === "error") return { status: "error", label: "Sync-Fehler", detail: syncRuntime.detail || "Bitte erneut prüfen." };
+  if (syncRunning || activeGameSyncRunning || syncRuntime.status === "syncing") return { status: "syncing", label: "Wird synchronisiert", detail: waiting || syncRuntime.detail || "Online-Bestätigung wird geprüft." };
+  if (parts.length || localInput) return { status: "pending", label: "Lokal gespeichert", detail: waiting || "Aktuelle Eingabe ist noch nicht online bestätigt." };
+  if (!state.sync.lastSyncedAt) return { status: "pending", label: "Noch nicht abgeglichen", detail: "Die erste Online-Bestätigung steht noch aus." };
+  return { status: "synced", label: "Alles synchron", detail: getLastSyncText() };
+}
+
+function renderSyncBadge() {
+  const display = getSyncDisplay();
+  const pending = state.sync.pending || {};
+  const retry = navigator.onLine && !localSaveFailed && !activeGameConflict
+    && (display.status === "error" || (display.status === "pending"
+      && (pending.players || (pending.matches || []).length || pending.activeGame || pending.activeClear)));
+  return `<div class="sync-badge ${display.status}" role="status" aria-live="polite"><span class="sync-dot ${display.status}" aria-hidden="true"></span><strong>${escapeHtml(display.label)}</strong><span>${escapeHtml(display.detail)}</span>${retry ? '<button class="sync-retry" data-action="sync-now">Jetzt prüfen</button>' : ""}</div>`;
 }
 
 function getLastSyncText() {
@@ -426,9 +538,9 @@ function render() {
 }
 
 function renderMainContent() {
-  if (state.activeView === "game") return renderGameView();
-  if (state.activeView === "stats") return renderStatsView();
-  if (state.activeView === "players") return renderPlayersView();
+  if (state.activeView === "game") return renderSyncBadge() + renderGameView();
+  if (state.activeView === "stats") return renderSyncBadge() + renderStatsView();
+  if (state.activeView === "players") return renderSyncBadge() + renderPlayersView();
   return "";
 }
 
@@ -443,6 +555,8 @@ function renderOverlays() {
     ${familyCodeEditorOpen ? renderFamilyCodeEditor() : ""}
     ${activeMatchId ? renderMatchDetails() : ""}
     ${activeGlobalHitCategory ? renderGlobalHitDetails() : ""}
+    ${checkoutHelpOpen ? renderCheckoutHelpDetails() : ""}
+    ${activeGameConflict ? renderActiveGameConflict() : ""}
   `;
 }
 
@@ -958,13 +1072,14 @@ function closeModePicker(apply = false) {
 }
 
 function renderSyncPanel() {
+  const display = getSyncDisplay();
   return `
     <div class="sync-panel">
       <div class="sync-row">
-        <span class="sync-dot ${syncRuntime.status}"></span>
+        <span class="sync-dot ${display.status}"></span>
         <div>
-          <strong>${getSyncLabel()}</strong>
-          <p class="hint">${escapeHtml(syncRuntime.detail || getLastSyncText())}</p>
+          <strong>${escapeHtml(display.label)}</strong>
+          <p class="hint">${escapeHtml(display.detail)}</p>
         </div>
       </div>
       <div class="sync-code">Familie ${escapeHtml(state.sync.familyCode)}</div>
@@ -1037,6 +1152,8 @@ function renderActiveGame() {
   const projectedRemaining = projection.remaining;
   const projectedBust = projection.bust;
   const canAddThrow = !projection.terminal;
+  const checkoutRoutes = !isRestjagd(game) && state.setup.checkoutHelp && !projection.terminal
+    ? getCheckoutRoutes(projectedRemaining, 3 - throws.length, game.checkout) : [];
 
   return `
     <section class="game-board">
@@ -1055,6 +1172,7 @@ function renderActiveGame() {
             <div class="turn-rules">
               <span class="small-pill">${isRestjagd(game) ? `Restjagd · Start ${game.startScore}` : game.startScore}</span>
               <span class="small-pill">${game.checkout === "double" ? "Double Out" : "Einfach"}</span>
+              ${!isRestjagd(game) ? `<button class="checkout-help-toggle" data-action="toggle-checkout-help" aria-label="Checkout-Hilfe ${state.setup.checkoutHelp ? "an" : "aus"}" aria-pressed="${state.setup.checkoutHelp}">Hilfe ${state.setup.checkoutHelp ? "an" : "aus"}</button>` : ""}
             </div>
           </div>
 
@@ -1069,6 +1187,7 @@ function renderActiveGame() {
               <span class="throw-label">Rest</span>
               <strong>${projectedBust ? "Bust" : projectedRemaining}</strong>
             </div>
+            ${checkoutRoutes.length ? `<div class="checkout-assist" aria-label="Checkout-Vorschlag"><span>Checkout</span><strong>${escapeHtml(formatCheckoutRoute(checkoutRoutes[0]))}</strong>${checkoutRoutes.length > 1 ? '<button data-action="open-checkout-help">Weitere</button>' : ""}</div>` : ""}
           </div>
 
           ${game.lastSavedRound && game.lastSavedRound.length ? `
@@ -1112,6 +1231,25 @@ function renderActiveGame() {
 
       ${state.message ? `<div class="message">${escapeHtml(state.message)}</div>` : ""}
     </section>
+  `;
+}
+
+function renderCheckoutHelpDetails() {
+  const game = state.activeGame;
+  if (!game || !isClassicMatch(game) || game.finishedAt || !state.setup.checkoutHelp) return "";
+  const turn = evaluateTurn(game);
+  if (turn.terminal) return "";
+  const routes = getCheckoutRoutes(turn.remaining, 3 - (game.currentThrows || []).length, game.checkout);
+  if (!routes.length) return "";
+  return `
+    <div class="modal-backdrop">
+      <section class="install-card checkout-help-card" role="dialog" aria-modal="true" aria-label="Checkout-Wege">
+        <div class="editor-head"><h2>Checkout bei ${turn.remaining}</h2><button class="icon-button" data-action="close-checkout-help" aria-label="Schliessen">X</button></div>
+        <p class="hint">${3 - (game.currentThrows || []).length} Darts uebrig · ${game.checkout === "double" ? "Double Out" : "Einfach"}</p>
+        <div class="checkout-route-list">${routes.map((route, index) => `<div class="checkout-route"><span>${index + 1}.</span><strong>${escapeHtml(formatCheckoutRoute(route))}</strong></div>`).join("")}</div>
+        <button class="secondary" data-action="close-checkout-help">Schliessen</button>
+      </section>
+    </div>
   `;
 }
 
@@ -1878,14 +2016,17 @@ function changeFamilyCode(code) {
   state.sync.lastSyncedAt = "";
   state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
+  state.sync.pending = { players: true, matches: [], activeGame: null, activeClear: null };
   stopFamilyResetWatcher();
   stopFamilyDataWatchers();
   stopActiveGameWatcher();
   state.message = "Familien-Code geaendert.";
+  activeGameConflict = null;
   familyCodeEditorOpen = false;
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
   saveAndRender();
   queueSync();
+  if (state.activeGame) queueActiveGameSync(-1);
 }
 
 async function resetFamilyTree() {
@@ -1952,6 +2093,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
       mode: "classic",
       startScore: 501,
       checkout: "straight",
+      checkoutHelp: true,
       selectedPlayerIds: []
     },
     sync: {
@@ -1959,7 +2101,8 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
       familyCode,
       lastSyncedAt: new Date().toISOString(),
       lastResetAt: resetAt,
-      deletedPlayerIds: []
+      deletedPlayerIds: [],
+      pending: { players: false, matches: [], activeGame: null, activeClear: null }
     },
     activeGame: null,
     welcomeSeen: true,
@@ -1968,15 +2111,24 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
   guestPlayers = [];
   avatarEditorPlayerId = null;
   activeStatsPlayerId = null;
+  activeGameConflict = null;
   modePickerOpen = false;
 }
 
-function queueSync() {
+function queueSync({ matchId = "" } = {}) {
   if (!isSyncEnabled()) return;
+  familySyncRevision += 1;
+  if (matchId) {
+    state.sync.pending.matches = [...new Set([...state.sync.pending.matches, matchId])];
+  } else {
+    state.sync.pending.players = true;
+  }
+  saveState();
   if (!navigator.onLine) {
     setSyncRuntime("offline", "Offline. Neue Ergebnisse bleiben gespeichert und werden automatisch gesendet.");
     return;
   }
+  setSyncRuntime("syncing", "Lokale Änderungen werden übertragen.");
   window.clearTimeout(syncTimer);
   syncTimer = window.setTimeout(() => {
     syncWithFirebase({ manual: false });
@@ -1993,6 +2145,7 @@ async function syncWithFirebase({ manual = false } = {}) {
     renderMainOnly();
     return;
   }
+  const runRevision = familySyncRevision;
   syncRunning = true;
   setSyncRuntime("syncing", "Spieler und fertige Spiele werden abgeglichen.");
 
@@ -2012,9 +2165,20 @@ async function syncWithFirebase({ manual = false } = {}) {
     await deleteQueuedRemotePlayers(familyRef);
     await pullRemoteData(familyRef);
     await pushLocalData(familyRef);
+    if (state.sync.pending.activeClear) {
+      const pendingClear = state.sync.pending.activeClear;
+      if (!await clearRemoteActiveGame(pendingClear.revision, pendingClear.id)
+        && state.sync.pending.activeClear) {
+        throw new Error("Partieabschluss konnte nicht online bestätigt werden.");
+      }
+    }
 
     state.sync.lastSyncedAt = new Date().toISOString();
-    state.message = manual && !remoteResetApplied ? "Alles ist aktuell." : state.message;
+    if (familySyncRevision === runRevision) {
+      state.sync.pending.players = false;
+      state.sync.pending.matches = [];
+    }
+    state.message = manual && !remoteResetApplied ? "Familien-Daten wurden abgeglichen." : state.message;
     setSyncRuntime("synced", getLastSyncText(), "", false);
     saveState();
   } catch (error) {
@@ -2028,6 +2192,10 @@ async function syncWithFirebase({ manual = false } = {}) {
   } finally {
     syncRunning = false;
     renderMainOnly();
+    if (familySyncRevision !== runRevision && navigator.onLine) {
+      window.clearTimeout(syncTimer);
+      syncTimer = window.setTimeout(() => syncWithFirebase({ manual: false }), 700);
+    }
   }
 }
 
@@ -2084,16 +2252,24 @@ function watchActiveGame(familyRef) {
   activeGameListenCode = state.sync.familyCode;
   const activeGameRef = familyRef.collection("activeGames").doc("current");
   activeGameUnsubscribe = activeGameRef.onSnapshot((snapshot) => {
-    if (activeGameListenCode !== state.sync.familyCode || !snapshot.exists) return;
+    if (activeGameListenCode !== state.sync.familyCode) return;
+    activeGameListenerFailure = "";
+    if (!snapshot.exists) return;
     const remoteGame = normalizeRemoteActiveGame(snapshot.data());
     if (!remoteGame) return;
+    if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === remoteGame.id) return;
     const localGame = state.activeGame;
     const remoteRevision = Number(remoteGame.revision || 0);
     const localRevision = Number(localGame && localGame.revision || 0);
     const remoteIsNewer = !localGame
+      || remoteGame.id !== localGame.id
       || remoteRevision > localRevision
       || (remoteRevision === localRevision && getTime(remoteGame.updatedAt) > getTime(localGame.updatedAt));
     if (!remoteIsNewer || remoteGame.deviceId === DEVICE_ID) return;
+    if (localGame && (state.sync.pending.activeGame || (localGame.currentThrows || []).length)) {
+      showActiveGameConflict(remoteGame);
+      return;
+    }
 
     state.activeGame = remoteGame;
     state.message = "Die laufende Partie wurde von einem anderen Geraet aktualisiert.";
@@ -2101,8 +2277,56 @@ function watchActiveGame(familyRef) {
   }, (error) => {
     activeGameUnsubscribe = null;
     activeGameListenCode = "";
-    setSyncRuntime("error", "Laufende Partie konnte nicht live geladen werden.", error && error.message ? error.message : "");
+    activeGameListenerFailure = "Laufende Partie konnte nicht live geladen werden.";
+    setSyncRuntime("error", activeGameListenerFailure, error && error.message ? error.message : "");
   });
+}
+
+function showActiveGameConflict(remoteGame) {
+  if (activeGameConflict && activeGameConflict.remoteGame.id === remoteGame.id
+    && activeGameConflict.remoteGame.revision === remoteGame.revision) return;
+  activeGameConflict = { remoteGame };
+  checkoutHelpOpen = false;
+  state.message = "Diese Partie wurde auf einem anderen Gerät geändert. Wähle den Spielstand aus.";
+  setSyncRuntime("error", "Zwei Geräte haben diese Partie geändert. Bitte einen Stand wählen.", "", false);
+  saveState();
+  render();
+}
+
+function renderActiveGameConflict() {
+  if (!activeGameConflict) return "";
+  const local = state.activeGame;
+  const remote = activeGameConflict.remoteGame;
+  const summary = (game) => game ? `${game.players.map((player) => `${escapeHtml(player.name)}: ${Number(player.remaining || 0)}`).join(" · ")}${game.currentThrows && game.currentThrows.length ? ` · Eingabe: ${game.currentThrows.map((dart) => escapeHtml(dart.label)).join(" + ")}` : ""}` : "Kein laufendes Spiel";
+  return `<div class="modal-backdrop"><section class="install-card sync-conflict-card" role="dialog" aria-modal="true" aria-label="Sync-Konflikt">
+    <h2>Zwei Spielstände vorhanden</h2>
+    <p class="hint">Deine lokale Eingabe bleibt erhalten, bis du einen Stand auswählst.</p>
+    <div class="sync-conflict-options"><div><strong>Dieses Gerät</strong><p>${summary(local)}</p></div><div><strong>Familie</strong><p>${summary(remote)}</p></div></div>
+    <button class="primary" data-action="keep-local-game">Dieses Gerät behalten</button>
+    <button class="secondary" data-action="accept-family-game">Familienstand laden</button>
+  </section></div>`;
+}
+
+function resolveActiveGameConflict(keepLocal) {
+  if (!activeGameConflict) return;
+  const remote = activeGameConflict.remoteGame;
+  activeGameConflict = null;
+  if (keepLocal && state.activeGame) {
+    state.activeGame.revision = Math.max(Number(state.activeGame.revision || 0), Number(remote.revision || 0)) + 1;
+    state.activeGame.updatedAt = new Date().toISOString();
+    state.activeGame.deviceId = DEVICE_ID;
+    state.sync.pending.activeGame = null;
+    state.message = "Lokaler Spielstand wird an die Familie übertragen.";
+    saveAndRender();
+    queueActiveGameSync(Number(remote.revision || 0));
+    return;
+  }
+  state.activeGame = remote;
+  state.sync.pending.activeGame = null;
+  activeGameSyncPendingRevision = null;
+  state.message = "Familienstand wurde geladen.";
+  setSyncRuntime("synced", "Laufende Partie aus der Familie geladen.", "", false);
+  saveAndRender();
 }
 
 function watchFamilyData(familyRef) {
@@ -2110,15 +2334,23 @@ function watchFamilyData(familyRef) {
 
   stopFamilyDataWatchers();
   familyDataListenCode = state.sync.familyCode;
+  let playersReceived = false;
+  let matchesReceived = false;
+  const acknowledgeLiveData = () => {
+    if (playersReceived && matchesReceived) familyListenerFailure = "";
+  };
 
   const handleListenerError = (error) => {
     familyDataUnsubscribes = [];
     familyDataListenCode = "";
-    setSyncRuntime("error", "Live-Synchronisierung nicht verfuegbar. Manuell pruefen bleibt moeglich.", error && error.message ? error.message : "");
+    familyListenerFailure = "Live-Synchronisierung nicht verfuegbar. Manuell pruefen bleibt moeglich.";
+    setSyncRuntime("error", familyListenerFailure, error && error.message ? error.message : "");
   };
 
   const playerUnsubscribe = familyRef.collection("players").onSnapshot((snapshot) => {
     if (familyDataListenCode !== state.sync.familyCode) return;
+    playersReceived = true;
+    acknowledgeLiveData();
     const deletedPlayerIds = snapshot.docs
       .filter((doc) => doc.data() && doc.data().deleted === true)
       .map((doc) => doc.id);
@@ -2137,6 +2369,8 @@ function watchFamilyData(familyRef) {
 
   const matchUnsubscribe = familyRef.collection("matches").onSnapshot((snapshot) => {
     if (familyDataListenCode !== state.sync.familyCode) return;
+    matchesReceived = true;
+    acknowledgeLiveData();
     const remoteMatches = snapshot.docs
       .map((doc) => normalizeRemoteMatch(doc.id, doc.data()))
       .filter(Boolean);
@@ -2335,17 +2569,34 @@ async function pushLocalData(familyRef) {
 
 function queueActiveGameSync(expectedRevision) {
   if (!isSyncEnabled() || !state.activeGame) return;
-  activeGameSyncPendingRevision = expectedRevision;
+  const previous = state.sync.pending.activeGame;
+  state.sync.pending.activeGame = {
+    id: state.activeGame.id,
+    revision: Number(state.activeGame.revision || 0),
+    baseRevision: previous && previous.id === state.activeGame.id ? previous.baseRevision : expectedRevision
+  };
+  activeGameSyncPendingRevision = state.sync.pending.activeGame.baseRevision;
+  saveState();
+  if (!navigator.onLine) {
+    setSyncRuntime("offline", "Laufende Partie ist lokal gespeichert.");
+    return;
+  }
+  setSyncRuntime("syncing", "Laufende Partie wird übertragen.");
   window.clearTimeout(activeGameSyncTimer);
   activeGameSyncTimer = window.setTimeout(() => syncActiveGame(), 250);
 }
 
 async function syncActiveGame() {
   if (activeGameSyncRunning || activeGameSyncPendingRevision === null || !state.activeGame || !navigator.onLine) return;
+  if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === state.activeGame.id) {
+    activeGameSyncPendingRevision = null;
+    return;
+  }
   activeGameSyncRunning = true;
   const expectedRevision = activeGameSyncPendingRevision;
   activeGameSyncPendingRevision = null;
   const game = clone(state.activeGame);
+  activeGameSyncGameId = game.id;
 
   try {
     const db = await ensureFirebaseSession();
@@ -2353,41 +2604,91 @@ async function syncActiveGame() {
     await db.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(activeGameRef);
       const remoteRevision = snapshot.exists ? Number(snapshot.data().revision || 0) : -1;
-      if (remoteRevision > expectedRevision) throw new Error("ACTIVE_GAME_CONFLICT");
+      if (snapshot.exists && (snapshot.data().id !== game.id || remoteRevision > expectedRevision)) {
+        throw new Error("ACTIVE_GAME_CONFLICT");
+      }
       transaction.set(activeGameRef, {
         ...prepareActiveGameForRemote(game),
         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
       });
     });
+    if (state.sync.pending.activeGame && state.sync.pending.activeGame.id === game.id) {
+      if (state.sync.pending.activeGame.revision <= Number(game.revision || 0)) {
+        state.sync.pending.activeGame = null;
+      } else {
+        state.sync.pending.activeGame.baseRevision = Number(game.revision || 0);
+        activeGameSyncPendingRevision = Number(game.revision || 0);
+      }
+    }
     setSyncRuntime("synced", "Laufende Partie synchron.", "", false);
   } catch (error) {
     if (error && error.message === "ACTIVE_GAME_CONFLICT") {
-      state.message = "Die Partie wurde gerade auf einem anderen Geraet geaendert. Der aktuelle Stand wird geladen.";
-      setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
+      try {
+        const db = await ensureFirebaseSession();
+        const snapshot = await db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current").get();
+        const remoteGame = snapshot.exists ? normalizeRemoteActiveGame(snapshot.data()) : null;
+        if (remoteGame) showActiveGameConflict(remoteGame);
+        else setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
+      } catch {
+        setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
+      }
     } else {
       setSyncRuntime("error", "Laufende Partie konnte nicht synchronisiert werden.", error && error.message ? error.message : "", false);
     }
   } finally {
     activeGameSyncRunning = false;
+    activeGameSyncGameId = "";
     saveState();
     renderMainOnly();
+    if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === game.id && navigator.onLine) {
+      clearRemoteActiveGame(state.sync.pending.activeClear.revision, game.id);
+    }
     if (activeGameSyncPendingRevision !== null) syncActiveGame();
   }
 }
 
-async function clearRemoteActiveGame(expectedRevision) {
-  if (!isSyncEnabled() || !navigator.onLine) return;
+function resumePendingActiveGameSync() {
+  const pending = state.sync.pending.activeGame;
+  if (!navigator.onLine || activeGameConflict || !pending || !state.activeGame
+    || state.activeGame.id !== pending.id || state.sync.pending.activeClear) return;
+  activeGameSyncPendingRevision = pending.baseRevision;
+  syncActiveGame();
+}
+
+async function clearRemoteActiveGame(expectedRevision, gameId) {
+  if (!isSyncEnabled() || !gameId) return false;
+  state.sync.pending.activeGame = state.sync.pending.activeGame && state.sync.pending.activeGame.id === gameId
+    ? null : state.sync.pending.activeGame;
+  state.sync.pending.activeClear = { id: gameId, revision: expectedRevision };
+  saveState();
+  if (!navigator.onLine) {
+    setSyncRuntime("offline", "Partieabschluss ist lokal gespeichert.");
+    return false;
+  }
   try {
     const db = await ensureFirebaseSession();
     const activeGameRef = db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current");
     await db.runTransaction(async (transaction) => {
       const snapshot = await transaction.get(activeGameRef);
-      if (!snapshot.exists || Number(snapshot.data().revision || 0) > expectedRevision) return;
+      if (!snapshot.exists || snapshot.data().id !== gameId
+        || Number(snapshot.data().revision || 0) > expectedRevision) return;
       transaction.delete(activeGameRef);
     });
-  } catch {
-    state.message = "Die laufende Partie konnte noch nicht aus der Familie entfernt werden.";
+    if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === gameId
+      && state.sync.pending.activeClear.revision === expectedRevision
+      && !(activeGameSyncRunning && activeGameSyncGameId === gameId)) state.sync.pending.activeClear = null;
     saveState();
+    renderMainOnly();
+    return true;
+  } catch {
+    if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === gameId
+      && state.sync.pending.activeClear.revision === expectedRevision) {
+      state.message = "Die laufende Partie konnte noch nicht aus der Familie entfernt werden.";
+      setSyncRuntime("error", "Partieabschluss konnte nicht online bestätigt werden.", "", false);
+      saveState();
+      renderMainOnly();
+    }
+    return false;
   }
 }
 
@@ -2600,6 +2901,7 @@ function startGame() {
   const allPlayers = [...selected, ...guestPlayers];
   if (allPlayers.length < mode.minPlayers) return;
   state.activeGame = createGame(allPlayers, { ...state.setup, checkout: mode.fixedCheckout || state.setup.checkout });
+  checkoutHelpOpen = false;
   guestPlayers = [];
   state.message = "";
   saveAndRender();
@@ -2698,6 +3000,7 @@ function submitRouletteTurn() {
 function submitRound() {
   const game = state.activeGame;
   if (!game || game.finishedAt) return;
+  checkoutHelpOpen = false;
   if (isDartRoulette(game)) {
     submitRouletteTurn();
     return;
@@ -2755,8 +3058,8 @@ function submitRound() {
   saveAndRenderMain();
   scrollToActiveScore();
   if (turn.finished && !isRestjagd(game)) {
-    clearRemoteActiveGame(game.revision);
-    queueSync();
+    clearRemoteActiveGame(game.revision, game.id);
+    queueSync({ matchId: game.id });
   } else {
     // DartMix keeps only the current game, so other devices can show its winner too.
     queueActiveGameSync(expectedRevision);
@@ -3090,11 +3393,13 @@ function cancelGame() {
   if (!state.activeGame) return;
   if (!confirm("Aktuelles Spiel abbrechen?")) return;
   const expectedRevision = Number(state.activeGame.revision || 0);
+  const gameId = state.activeGame.id;
+  checkoutHelpOpen = false;
   clearRouletteIntro();
   state.activeGame = null;
   state.message = "";
   saveAndRender();
-  clearRemoteActiveGame(expectedRevision);
+  clearRemoteActiveGame(expectedRevision, gameId);
 }
 
 function saveAndRender() {
@@ -3148,6 +3453,21 @@ document.addEventListener("click", (event) => {
     state.setup.checkout = button.dataset.checkout === "double" ? "double" : "straight";
     saveAndRender();
   }
+  if (action === "toggle-checkout-help" && state.activeGame && isClassicMatch(state.activeGame)) {
+    state.setup.checkoutHelp = !state.setup.checkoutHelp;
+    checkoutHelpOpen = false;
+    saveAndRenderMain();
+  }
+  if (action === "open-checkout-help") {
+    checkoutHelpOpen = true;
+    render();
+  }
+  if (action === "close-checkout-help") {
+    checkoutHelpOpen = false;
+    render();
+  }
+  if (action === "keep-local-game") resolveActiveGameConflict(true);
+  if (action === "accept-family-game") resolveActiveGameConflict(false);
   if (action === "set-roulette-scope" && !state.activeGame && getSetupMode().kind === "dartroulette") {
     state.setup.rouletteScope = button.dataset.scope === "all" ? "all" : "single";
     saveAndRender();
@@ -3165,11 +3485,13 @@ document.addEventListener("click", (event) => {
   if (action === "cancel-game") cancelGame();
   if (action === "new-game") {
     const expectedRevision = Number(state.activeGame && state.activeGame.revision || 0);
+    const gameId = state.activeGame && state.activeGame.id;
+    checkoutHelpOpen = false;
     clearRouletteIntro();
     state.activeGame = null;
     state.message = "";
     saveAndRender();
-    clearRemoteActiveGame(expectedRevision);
+    clearRemoteActiveGame(expectedRevision, gameId);
   }
   if (action === "open-avatar") openAvatarEditor(button.dataset.playerId);
   if (action === "close-avatar") closeAvatarEditor();
@@ -3203,7 +3525,7 @@ document.addEventListener("click", (event) => {
   if (action === "close-welcome") closeWelcome();
   if (action === "rename-player") renamePlayer(button.dataset.playerId);
   if (action === "delete-player") deletePlayer(button.dataset.playerId);
-  if (action === "sync-now") syncWithFirebase({ manual: true });
+  if (action === "sync-now") syncWithFirebase({ manual: true }).then(resumePendingActiveGameSync);
   if (action === "open-family-code") openFamilyCodeEditor();
   if (action === "close-family-code") closeFamilyCodeEditor();
   if (action === "apply-update") applyUpdate();
@@ -3233,6 +3555,11 @@ document.addEventListener("submit", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (checkoutHelpOpen && event.key === "Escape") {
+    checkoutHelpOpen = false;
+    render();
+    return;
+  }
   if (isRestjagdIntroVisible()) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -3323,7 +3650,7 @@ window.addEventListener("appinstalled", () => {
 
 window.addEventListener("online", () => {
   setSyncRuntime("syncing", "Internet ist wieder da. Daten werden abgeglichen.");
-  syncWithFirebase({ manual: false });
+  syncWithFirebase({ manual: false }).then(resumePendingActiveGameSync);
 });
 
 window.addEventListener("offline", () => {
@@ -3333,5 +3660,5 @@ window.addEventListener("offline", () => {
 render();
 if (isSyncEnabled()) {
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Familien-Daten werden geladen." : "Offline. Ergebnisse werden spaeter automatisch gesendet.", "", false);
-  syncWithFirebase({ manual: false });
+  syncWithFirebase({ manual: false }).then(resumePendingActiveGameSync);
 }
