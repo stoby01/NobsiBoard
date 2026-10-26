@@ -86,6 +86,7 @@ const defaultState = {
     lastSyncedAt: "",
     lastResetAt: "",
     deletedPlayerIds: [],
+    matchTombstones: {},
     pending: { players: false, matches: [], activeGame: null, activeClear: null }
   },
   activeGame: null,
@@ -100,6 +101,13 @@ let activeStatsPlayerId = null;
 let activeMatchId = null;
 let activeGlobalHitCategory = "";
 let checkoutHelpOpen = false;
+let selectedDartIndex = -1;
+let replaceSelectedDart = false;
+let inputGameId = "";
+let dartFeedback = null;
+let dartFeedbackTimer = null;
+let rouletteHitTimer = null;
+let checkoutWasReopened = false;
 let deferredInstallPrompt = null;
 let installHelpOpen = false;
 let familyCodeEditorOpen = false;
@@ -141,6 +149,7 @@ let activeGameSyncPendingRevision = null;
 let syncTimer = null;
 let syncRunning = false;
 let familySyncRevision = 0;
+let knownRemoteMatchIds = new Set();
 let activeGameConflict = null;
 let localSaveFailed = false;
 let syncRuntime = {
@@ -287,7 +296,7 @@ function isClassicMatch(match) {
 }
 
 function getClassicMatches() {
-  return (state.matches || []).filter(isClassicMatch);
+  return (state.matches || []).filter((match) => isClassicMatch(match) && !match.deleted);
 }
 
 function getGameRemaining(game) {
@@ -374,6 +383,7 @@ function normalizeSync(sync) {
     familyCode,
     lastResetAt: sync && sync.lastResetAt ? normalizeDateValue(sync.lastResetAt) : "",
     deletedPlayerIds: Array.isArray(sync && sync.deletedPlayerIds) ? sync.deletedPlayerIds : [],
+    matchTombstones: sync && sync.matchTombstones && typeof sync.matchTombstones === "object" ? sync.matchTombstones : {},
     pending: {
       players: Boolean(pending.players),
       matches: Array.isArray(pending.matches) ? [...new Set(pending.matches.map(String))] : [],
@@ -1142,29 +1152,29 @@ function renderGuestOption(player) {
 function renderActiveGame() {
   const game = state.activeGame;
   if (isDartRoulette(game)) return renderRouletteGame(game);
+  const entryGame = getDartEntryGame(game);
   const current = game.players[game.currentIndex];
   const isFinished = Boolean(game.finishedAt);
-  const throws = game.currentThrows || [];
+  const throws = entryGame.currentThrows || [];
   const roundTotal = throws.reduce((sum, dart) => sum + dart.value, 0);
-  const projection = evaluateTurn(game);
+  const projection = evaluateTurn(entryGame);
   const projectedRemaining = projection.remaining;
   const projectedBust = projection.bust;
-  const canAddThrow = !projection.terminal;
   const checkoutRoutes = !isRestjagd(game) && state.setup.checkoutHelp && !projection.terminal
     ? getCheckoutRoutes(projectedRemaining, 3 - throws.length, game.checkout) : [];
 
   return `
     <section class="game-board">
       ${isFinished ? renderWinner(game) : ""}
-      ${isRestjagd(game) ? renderSharedScore(game) : `<div class="scorecards">
+      ${isFinished && game.checkoutEdit ? "" : isRestjagd(game) ? renderSharedScore(game) : `<div class="scorecards">
         ${game.players.map((player, index) => renderScoreCard(player, index === game.currentIndex && !isFinished)).join("")}
       </div>`}
 
-      ${!isFinished ? `
+      ${!isFinished || game.checkoutEdit ? `
         <div class="turn-panel">
           <div class="turn-head">
             <div>
-              <p class="hint" style="color:rgba(255,255,255,.72)">Am Zug</p>
+              <p class="hint" style="color:rgba(255,255,255,.72)">${isFinished ? "Gewinnwurf bearbeiten" : "Am Zug"}</p>
               <div class="turn-player">${escapeHtml(current.name)}</div>
             </div>
             <div class="turn-rules">
@@ -1178,17 +1188,18 @@ function renderActiveGame() {
             <div class="throw-entry">
               <span class="throw-label">Eingabe &middot; Runde <b>${roundTotal}</b></span>
               <div class="throw-list" aria-label="Geworfene Darts">
-                ${[0, 1, 2].map((index) => `<span class="${throws[index] ? "" : "is-empty"}">${throws[index] ? escapeHtml(throws[index].label) : `${index + 1}. Dart`}</span>`).join("")}
+                ${renderDartSlots(game)}
               </div>
             </div>
             <div class="throw-projection ${projectedBust ? "is-bust" : ""}">
               <span class="throw-label">Rest</span>
               <strong>${projectedBust ? "Bust" : projectedRemaining}</strong>
             </div>
+            ${renderDartModifiers(game)}
             ${checkoutRoutes.length ? `<div class="checkout-assist" aria-label="Checkout-Vorschlag"><span>Checkout</span><strong>${escapeHtml(formatCheckoutRoute(checkoutRoutes[0]))}</strong>${checkoutRoutes.length > 1 ? '<button data-action="open-checkout-help">Weitere</button>' : ""}</div>` : ""}
           </div>
 
-          ${game.lastSavedRound && game.lastSavedRound.length ? `
+          ${!isFinished && game.lastSavedRound && game.lastSavedRound.length ? `
             <div class="last-round-preview" aria-label="Letzte gespeicherte Runde">
               <span class="throw-label">Letzte Runde</span>
               <div class="last-round-darts">
@@ -1197,30 +1208,12 @@ function renderActiveGame() {
             </div>
           ` : ""}
 
-          <div class="dart-pad" aria-label="Dartfelder">
-            <div class="dart-section">
-              <div class="pad-title">Single</div>
-              <div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number, String(number), "single", canAddThrow)).join("")}</div>
-            </div>
-            <div class="dart-section">
-              <div class="pad-title">Double</div>
-              <div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 2, `D${number}`, "double", canAddThrow)).join("")}</div>
-            </div>
-            <div class="dart-section">
-              <div class="pad-title">Triple</div>
-              <div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 3, `T${number}`, "triple", canAddThrow)).join("")}</div>
-            </div>
-            <div class="bull-grid">
-              ${renderDartButton(25, "Bull", "bull", canAddThrow)}
-              ${renderDartButton(50, "Bullseye", "bullseye", canAddThrow)}
-              ${renderDartButton(0, "Vorbei", "miss", canAddThrow)}
-            </div>
-          </div>
+          ${renderDartPad(game)}
 
           <div class="actions">
-            <button class="primary ${projectedBust ? "bust-action" : ""}" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>${projectedBust ? "BUST!" : projection.finished ? "Checkout bestaetigen" : "Runde speichern"}</button>
+            ${!isFinished ? `<button class="primary ${projectedBust ? "bust-action" : ""}" data-action="submit-round" ${throws.length === 0 ? "disabled" : ""}>${projectedBust ? "BUST!" : "Runde speichern"}</button>` : ""}
             <button class="secondary" data-action="remove-last-dart" ${throws.length === 0 ? "disabled" : ""}>Wurf zurueck</button>
-            <button class="secondary" data-action="undo" ${game.history.length === 0 ? "disabled" : ""}>Runde zurueck</button>
+            ${!isFinished ? `<button class="secondary" data-action="undo" ${game.history.length === 0 ? "disabled" : ""}>Runde zurueck</button>` : ""}
             <button class="ghost" data-action="clear-throws">Runde leeren</button>
             <button class="danger" data-action="cancel-game">Spiel abbrechen</button>
           </div>
@@ -1255,7 +1248,6 @@ function renderRouletteGame(game) {
   const current = game.players[game.currentIndex];
   const throws = game.currentThrows || [];
   const hit = throws.some((dart) => isRouletteHit(dart, game.rouletteTarget));
-  const canAdd = !hit && throws.length < 3;
   const solo = game.players.length === 1;
   const winner = game.players.find((player) => player.id === game.winnerId);
   return `<section class="game-board roulette-game">
@@ -1274,16 +1266,12 @@ function renderRouletteGame(game) {
     ${!game.finishedAt ? `<div class="turn-panel">
       <div class="turn-head"><div><p class="hint" style="color:rgba(255,255,255,.72)">Am Zug</p><div class="turn-player">${escapeHtml(current.name)}</div></div><span class="small-pill">${hit ? "Getroffen!" : `${3 - throws.length} Darts uebrig`}</span></div>
       <div class="throw-summary" aria-label="Zielfeld und aktuelle Eingabe">
-        <div class="throw-entry"><span class="throw-label">Eingabe</span><div class="throw-list">${[0,1,2].map((index) => `<span class="${throws[index] ? "" : "is-empty"}">${throws[index] ? escapeHtml(throws[index].label) : `${index + 1}. Dart`}</span>`).join("")}</div></div>
+        <div class="throw-entry"><span class="throw-label">Eingabe</span><div class="throw-list">${renderDartSlots(game)}</div></div>
         <div class="throw-projection"><span class="throw-label">Ziel</span><strong>${escapeHtml(rouletteTargetName(game.rouletteTarget))}</strong></div>
+        ${renderDartModifiers(game)}
       </div>
       <p class="roulette-rule">${game.rouletteScope === "all" ? "Nur genau dieses Feld zaehlt: Single, Double, Triple, Bull und Bullseye sind verschieden." : "Nur das ausgeloste Single-Feld zaehlt."}</p>
-      <div class="dart-pad" aria-label="Dartfelder">
-        <div class="dart-section"><div class="pad-title">Single</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number, String(number), "single", canAdd)).join("")}</div></div>
-        <div class="dart-section"><div class="pad-title">Double</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 2, `D${number}`, "double", canAdd)).join("")}</div></div>
-        <div class="dart-section"><div class="pad-title">Triple</div><div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number * 3, `T${number}`, "triple", canAdd)).join("")}</div></div>
-        <div class="bull-grid">${renderDartButton(25, "Bull", "bull", canAdd)}${renderDartButton(50, "Bullseye", "bullseye", canAdd)}${renderDartButton(0, "Vorbei", "miss", canAdd)}</div>
-      </div>
+      ${renderDartPad(game)}
       <div class="actions"><button class="primary" data-action="submit-round" ${!hit && throws.length < 3 ? "disabled" : ""}>${hit ? "Treffer bestaetigen" : "Drei Wuerfe bestaetigen"}</button>
         <button class="secondary" data-action="remove-last-dart" ${throws.length ? "" : "disabled"}>Wurf zurueck</button>
         <button class="secondary" data-action="undo" ${game.history.length ? "" : "disabled"}>Runde zurueck</button>
@@ -1310,7 +1298,51 @@ function renderSharedScore(game) {
 }
 
 function renderDartButton(value, label, type, enabled) {
-  return `<button class="dart-button ${type}" data-action="add-dart" data-value="${value}" data-label="${label}" data-type="${type}" ${enabled ? "" : "disabled"}>${label}</button>`;
+  const pressed = dartFeedback && dartFeedback.gameId === state.activeGame?.id && dartFeedback.inputLabel === label;
+  return `<button class="dart-button ${type}${pressed ? " dart-feedback" : ""}" data-action="add-dart" data-value="${value}" data-label="${label}" data-type="${type}" ${enabled ? "" : "disabled"}>${label}</button>`;
+}
+
+function getDartEntryGame(game) {
+  return game.finishedAt && game.checkoutEdit ? game.checkoutEdit.before : game;
+}
+
+function getSelectedDartIndex(game) {
+  const darts = getDartEntryGame(game).currentThrows || [];
+  if (inputGameId !== game.id) {
+    inputGameId = game.id;
+    selectedDartIndex = darts.length - 1;
+    replaceSelectedDart = false;
+  }
+  if (selectedDartIndex < 0 || selectedDartIndex >= darts.length) selectedDartIndex = darts.length - 1;
+  return selectedDartIndex;
+}
+
+function renderDartSlots(game) {
+  const entry = getDartEntryGame(game);
+  const darts = entry.currentThrows || [];
+  const selected = getSelectedDartIndex(game);
+  const scoredDarts = isDartRoulette(game) ? darts.length : evaluateTurn(entry).usedDarts.length;
+  return [0, 1, 2].map((index) => `<button class="dart-slot${darts[index] ? "" : " is-empty"}${selected === index ? " selected" : ""}${dartFeedback?.gameId === game.id && selected === index ? " dart-change-pop" : ""}${darts[index] && index >= scoredDarts ? " is-unscored" : ""}" data-action="select-dart" data-index="${index}" aria-label="${index + 1}. Dart${darts[index] ? `: ${escapeHtml(darts[index].label)} bearbeiten${index >= scoredDarts ? ", zählt nach Checkout oder Bust nicht" : ""}` : ""}" aria-pressed="${selected === index}" ${darts[index] ? "" : "disabled"}>${darts[index] ? escapeHtml(darts[index].label) : `${index + 1}. Dart`}</button>`).join("");
+}
+
+function renderDartModifiers(game) {
+  const dart = getDartEntryGame(game).currentThrows[getSelectedDartIndex(game)];
+  const editable = dart && ["single", "double", "triple"].includes(dart.type);
+  const feedback = dartFeedback && dartFeedback.gameId === game.id;
+  return `<div class="dart-modifiers" role="group" aria-label="Ausgewählten Dart ändern">${[["single", "Einfach"], ["double", "Double"], ["triple", "Triple"]].map(([type, label]) => `<button class="dart-modifier ${type}${feedback && dartFeedback.modifier === type ? " dart-feedback" : ""}" data-action="set-dart-type" data-type="${type}" aria-pressed="${Boolean(editable && dart.type === type)}" ${editable ? "" : "disabled"}>${label}</button>`).join("")}${feedback ? `<span class="input-announcement" role="status">${escapeHtml(dartFeedback.label)}</span>` : ""}</div>`;
+}
+
+function renderDartPad(game) {
+  const entry = getDartEntryGame(game);
+  const darts = entry.currentThrows || [];
+  const selected = getSelectedDartIndex(game);
+  const canReplace = selected >= 0 && (replaceSelectedDart || Boolean(game.checkoutEdit));
+  const terminal = isDartRoulette(game) ? darts.some((item) => isRouletteHit(item, game.rouletteTarget)) || darts.length >= 3 : evaluateTurn(entry).terminal;
+  const enabled = canReplace || (!game.finishedAt && !terminal && darts.length < 3);
+  return `<div class="dart-pad compact-dart-pad" aria-label="Dartfelder">
+    <div class="dart-grid">${dartNumbers.map((number) => renderDartButton(number, String(number), "single", enabled)).join("")}</div>
+    <div class="bull-grid">${renderDartButton(0, "Vorbei", "miss", enabled)}${renderDartButton(25, "Bull", "bull", enabled)}${renderDartButton(50, "Bullseye", "bullseye", enabled)}</div>
+  </div>`;
 }
 
 function renderScoreCard(player, active) {
@@ -2014,6 +2046,8 @@ function changeFamilyCode(code) {
   state.sync.lastSyncedAt = "";
   state.sync.lastResetAt = "";
   state.sync.deletedPlayerIds = [];
+  state.sync.matchTombstones = {};
+  knownRemoteMatchIds = new Set();
   state.sync.pending = { players: true, matches: [], activeGame: null, activeClear: null };
   stopFamilyResetWatcher();
   stopFamilyDataWatchers();
@@ -2100,6 +2134,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
       lastSyncedAt: new Date().toISOString(),
       lastResetAt: resetAt,
       deletedPlayerIds: [],
+      matchTombstones: {},
       pending: { players: false, matches: [], activeGame: null, activeClear: null }
     },
     activeGame: null,
@@ -2110,6 +2145,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
   avatarEditorPlayerId = null;
   activeStatsPlayerId = null;
   activeGameConflict = null;
+  knownRemoteMatchIds = new Set();
   modePickerOpen = false;
 }
 
@@ -2162,7 +2198,7 @@ async function syncWithFirebase({ manual = false } = {}) {
     const remoteResetApplied = await applyRemoteFamilyReset(familyRef);
     await deleteQueuedRemotePlayers(familyRef);
     await pullRemoteData(familyRef);
-    await pushLocalData(familyRef);
+    await pushLocalData(familyRef, db);
     if (state.sync.pending.activeClear) {
       const pendingClear = state.sync.pending.activeClear;
       if (!await clearRemoteActiveGame(pendingClear.revision, pendingClear.id)
@@ -2369,6 +2405,7 @@ function watchFamilyData(familyRef) {
     if (familyDataListenCode !== state.sync.familyCode) return;
     matchesReceived = true;
     acknowledgeLiveData();
+    knownRemoteMatchIds = new Set(snapshot.docs.map((doc) => doc.id));
     const remoteMatches = snapshot.docs
       .map((doc) => normalizeRemoteMatch(doc.id, doc.data()))
       .filter(Boolean);
@@ -2438,6 +2475,7 @@ async function pullRemoteData(familyRef) {
   const remoteMatches = matchSnapshot.docs
     .map((doc) => normalizeRemoteMatch(doc.id, doc.data()))
     .filter(Boolean);
+  knownRemoteMatchIds = new Set(matchSnapshot.docs.map((doc) => doc.id));
 
   mergeRemotePlayers(remotePlayers);
   mergeRemoteMatches(remoteMatches);
@@ -2487,8 +2525,21 @@ function mergeRemoteMatches(remoteMatches) {
   const byId = new Map(getClassicMatches().map((match) => [match.id, normalizeLocalMatch(match)]));
   remoteMatches.filter(isClassicMatch).forEach((remoteMatch) => {
     const localMatch = byId.get(remoteMatch.id);
-    if (!localMatch || getTime(remoteMatch.finishedAt || remoteMatch.createdAt) > getTime(localMatch.finishedAt || localMatch.createdAt)) {
+    const tombstone = state.sync.matchTombstones[remoteMatch.id];
+    const remoteRevision = Number(remoteMatch.revision || 0);
+    const localRevision = Number(localMatch?.revision || 0);
+    if (remoteMatch.deleted) {
+      if (remoteRevision >= localRevision && (!tombstone || remoteRevision >= tombstone.revision)) {
+        byId.delete(remoteMatch.id);
+        state.sync.matchTombstones[remoteMatch.id] = { revision: remoteRevision, updatedAt: remoteMatch.updatedAt };
+      }
+      return;
+    }
+    if (tombstone && remoteRevision <= tombstone.revision) return;
+    if (!localMatch || remoteRevision > localRevision
+      || (remoteRevision === localRevision && getTime(remoteMatch.updatedAt || remoteMatch.finishedAt) > getTime(localMatch.updatedAt || localMatch.finishedAt))) {
       byId.set(remoteMatch.id, remoteMatch);
+      delete state.sync.matchTombstones[remoteMatch.id];
     }
   });
   state.matches = [...byId.values()].sort((a, b) => getTime(a.finishedAt || a.createdAt) - getTime(b.finishedAt || b.createdAt));
@@ -2554,15 +2605,31 @@ async function deleteQueuedRemotePlayers(familyRef) {
   state.sync.deletedPlayerIds = [];
 }
 
-async function pushLocalData(familyRef) {
+async function pushLocalData(familyRef, db = firebaseDb) {
   const playerWrites = normalizePlayers(state.players).map((player) => (
     familyRef.collection("players").doc(player.id).set(preparePlayerForRemote(player), { merge: true })
   ));
-  const matchWrites = getClassicMatches().map((match) => {
+  const matchWrites = getClassicMatches().filter((match) => state.sync.pending.matches.includes(match.id) || !knownRemoteMatchIds.has(match.id)).map((match) => {
     const normalized = normalizeLocalMatch(match);
-    return familyRef.collection("matches").doc(normalized.id).set(prepareMatchForRemote(normalized), { merge: true });
+    const ref = familyRef.collection("matches").doc(normalized.id);
+    const payload = prepareMatchForRemote(normalized);
+    return writeVersionedMatch(db, ref, payload).then(() => knownRemoteMatchIds.add(normalized.id));
   });
-  await Promise.all([...playerWrites, ...matchWrites]);
+  const deletions = state.sync.pending.matches.filter((id) => state.sync.matchTombstones[id]).map((id) => {
+    const tombstone = state.sync.matchTombstones[id];
+    return writeVersionedMatch(db, familyRef.collection("matches").doc(id), { id, mode: "classic", deleted: true, ...tombstone });
+  });
+  await Promise.all([...playerWrites, ...matchWrites, ...deletions]);
+}
+
+function writeVersionedMatch(db, ref, payload) {
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    const remote = snapshot.exists ? snapshot.data() : {};
+    if (Number(remote.revision || 0) > Number(payload.revision || 0)) return;
+    if (remote.deleted && Number(remote.revision || 0) === Number(payload.revision || 0) && !payload.deleted) return;
+    transaction.set(ref, payload, { merge: true });
+  });
 }
 
 function queueActiveGameSync(expectedRevision) {
@@ -2730,6 +2797,7 @@ function normalizeRemoteActiveGame(data) {
       }))
       : [],
     history: Array.isArray(data.history) ? data.history : [],
+    checkoutEdit: data.checkoutEdit?.before ? { before: { ...data.checkoutEdit.before, history: [] } } : null,
     lastReaction: data.lastReaction || null,
     revision: Number(data.revision || 0),
     updatedAt: normalizeDateValue(data.updatedAt),
@@ -2738,9 +2806,12 @@ function normalizeRemoteActiveGame(data) {
 }
 
 function normalizeRemoteMatch(id, data) {
+  if (data && id && data.deleted) return { id, mode: String(data.mode || "classic"), deleted: true, revision: Number(data.revision || 0), updatedAt: normalizeDateValue(data.updatedAt) };
   if (!data || !id || !Array.isArray(data.players)) return null;
   return {
     id,
+    revision: Number(data.revision || 0),
+    updatedAt: normalizeDateValue(data.updatedAt) || data.finishedAt || "",
     mode: String(data.mode || "classic"),
     startScore: Number(data.startScore || 501),
     createdAt: data.createdAt || data.finishedAt || new Date().toISOString(),
@@ -2796,6 +2867,9 @@ function prepareMatchForRemote(match) {
   if (!isClassicMatch(match)) throw new Error("DartMix darf nicht als Statistik gespeichert werden.");
   return {
     id: match.id,
+    deleted: false,
+    revision: Number(match.revision || 0),
+    updatedAt: match.updatedAt || match.finishedAt,
     mode: "classic",
     startScore: match.startScore,
     createdAt: match.createdAt,
@@ -2827,6 +2901,7 @@ function prepareActiveGameForRemote(game) {
     currentIndex: game.currentIndex,
     currentThrows: game.currentThrows || [],
     history: [],
+    checkoutEdit: game.checkoutEdit || null,
     lastReaction: game.lastReaction || null,
     revision: Number(game.revision || 0),
     deviceId: DEVICE_ID,
@@ -2936,6 +3011,9 @@ function submitRouletteTurn() {
   const game = state.activeGame;
   if (!isDartRoulette(game) || game.finishedAt || !game.currentThrows.length || isRouletteIntroVisible()) return;
   const expectedRevision = Number(game.revision || 0);
+  window.clearTimeout(rouletteHitTimer);
+  selectedDartIndex = -1;
+  replaceSelectedDart = false;
   const player = game.players[game.currentIndex];
   const hit = game.currentThrows.some((dart) => isRouletteHit(dart, game.rouletteTarget));
   if (!hit && game.currentThrows.length < 3) {
@@ -2943,7 +3021,8 @@ function submitRouletteTurn() {
     renderMainOnly();
     return;
   }
-  game.history.push(createUndoSnapshot(game));
+  const before = createUndoSnapshot(game);
+  game.history.push(before);
   game.lastSavedRound = clone(game.currentThrows);
   game.currentThrows = [];
   game.roulettePending = game.roulettePending.filter((id) => id !== player.id);
@@ -3012,7 +3091,8 @@ function submitRound() {
     return;
   }
   const player = game.players[game.currentIndex];
-  game.history.push(createUndoSnapshot(game));
+  const before = createUndoSnapshot(game);
+  game.history.push(before);
   if (isRestjagd(game)) game.dartsThrown += throws.length;
   if (turn.bust) {
     game.lastReaction = { playerId: player.id, type: "bust" };
@@ -3038,11 +3118,15 @@ function submitRound() {
     game.finishedAt = new Date().toISOString();
     game.winnerId = player.id;
     game.lastReaction = { playerId: player.id, type: "winner" };
+    game.checkoutEdit = { before };
     if (!isRestjagd(game)) {
+      state.matches = state.matches.filter((match) => match.id !== game.id);
+      delete state.sync.matchTombstones[game.id];
       state.matches.push({
         id: game.id, mode: "classic", startScore: game.startScore,
         createdAt: game.createdAt, finishedAt: game.finishedAt,
         checkout: game.checkout, winnerId: game.winnerId,
+        revision: expectedRevision + 1, updatedAt: game.finishedAt,
         players: game.players.map((snapshot) => ({ ...snapshot }))
       });
     }
@@ -3053,6 +3137,10 @@ function submitRound() {
   game.revision = expectedRevision + 1;
   game.updatedAt = new Date().toISOString();
   game.deviceId = DEVICE_ID;
+  selectedDartIndex = turn.finished
+    ? (selectedDartIndex >= 0 && selectedDartIndex < before.currentThrows.length ? selectedDartIndex : before.currentThrows.length - 1)
+    : -1;
+  replaceSelectedDart = turn.finished;
   saveAndRenderMain();
   scrollToActiveScore();
   if (turn.finished && !isRestjagd(game)) {
@@ -3091,42 +3179,107 @@ function undo() {
 }
 
 function createUndoSnapshot(game) {
-  const snapshot = clone(game);
+  const { checkoutEdit, ...withoutCheckoutEdit } = game;
+  const snapshot = clone(withoutCheckoutEdit);
   snapshot.history = [];
   return snapshot;
 }
 
 function addDart(value, label, type) {
-  const game = state.activeGame;
-  if (!game || game.finishedAt) return;
+  const original = state.activeGame;
+  if (!original || (original.finishedAt && !original.checkoutEdit) || isRouletteIntroVisible()) return;
+  const entry = getDartEntryGame(original);
+  const index = getSelectedDartIndex(original);
+  const replacing = index >= 0 && (replaceSelectedDart || Boolean(original.checkoutEdit));
+  if (!replacing && (isDartRoulette(original)
+    ? entry.currentThrows.length >= 3 || entry.currentThrows.some((dart) => isRouletteHit(dart, original.rouletteTarget))
+    : evaluateTurn(entry).terminal)) return;
+  const game = reopenCheckoutForEdit();
   if (!game.currentThrows) game.currentThrows = [];
-  if (isDartRoulette(game) ? game.currentThrows.length >= 3 || game.currentThrows.some((dart) => isRouletteHit(dart, game.rouletteTarget)) : evaluateTurn(game).terminal) return;
-  game.currentThrows.push({ value: Number(value), label, type });
+  const dart = { value: Number(value), label, type };
+  if (replacing) game.currentThrows[index] = dart;
+  else game.currentThrows.push(dart);
+  selectedDartIndex = replacing ? index : game.currentThrows.length - 1;
+  replaceSelectedDart = false;
+  afterDartInput(dart, label);
+}
+
+function selectDart(index) {
+  const game = state.activeGame;
+  if (!game || !getDartEntryGame(game).currentThrows[index]) return;
+  inputGameId = game.id;
+  selectedDartIndex = index;
+  replaceSelectedDart = true;
+  renderMainOnly();
+}
+
+function setDartType(type) {
+  const original = state.activeGame;
+  if (!original || !["single", "double", "triple"].includes(type) || isRouletteIntroVisible()) return;
+  const index = getSelectedDartIndex(original);
+  const previous = getDartEntryGame(original).currentThrows[index];
+  if (!previous || !["single", "double", "triple"].includes(previous.type)) return;
+  const number = Number(previous.value) / ({ single: 1, double: 2, triple: 3 }[previous.type]);
+  if (!Number.isInteger(number) || number < 1 || number > 20) return;
+  const game = reopenCheckoutForEdit();
+  const dart = { value: number * ({ single: 1, double: 2, triple: 3 }[type]), label: `${type === "double" ? "D" : type === "triple" ? "T" : ""}${number}`, type };
+  game.currentThrows[index] = dart;
+  selectedDartIndex = index;
+  replaceSelectedDart = false;
+  afterDartInput(dart, "", type);
+}
+
+function reopenCheckoutForEdit() {
+  const finished = state.activeGame;
+  if (!finished.finishedAt || !finished.checkoutEdit) return finished;
+  const before = clone(finished.checkoutEdit.before);
+  const latestRevision = Math.max(Number(finished.revision || 0), Number(state.sync.matchTombstones[finished.id]?.revision || 0), Number(state.matches.find((match) => match.id === finished.id)?.revision || 0));
+  state.activeGame = {
+    ...before,
+    history: finished.history.slice(0, -1),
+    revision: latestRevision + 1,
+    updatedAt: new Date().toISOString(), deviceId: DEVICE_ID
+  };
+  checkoutWasReopened = true;
+  if (state.sync.pending.activeClear?.id === finished.id) state.sync.pending.activeClear = null;
+  if (!isRestjagd(finished)) {
+    state.matches = state.matches.filter((match) => match.id !== finished.id);
+    state.sync.matchTombstones[finished.id] = {
+      revision: state.activeGame.revision, updatedAt: state.activeGame.updatedAt
+    };
+    queueSync({ matchId: finished.id });
+  }
+  return state.activeGame;
+}
+
+function afterDartInput(dart, inputLabel = "", modifier = "") {
+  const game = state.activeGame;
+  const correctingCheckout = checkoutWasReopened;
+  checkoutWasReopened = false;
+  window.clearTimeout(rouletteHitTimer);
+  window.clearTimeout(dartFeedbackTimer);
+  dartFeedback = dart ? { gameId: game.id, label: dart.label, inputLabel, modifier } : null;
   state.message = "";
-  saveAndRenderMain();
-  // The original button was replaced by renderMainOnly; animate the new one.
-  const pressedButton = [...app.querySelectorAll('[data-action="add-dart"]')]
-    .find((button) => button.dataset.label === label && button.dataset.type === type);
-  if (pressedButton) {
-    pressedButton.classList.add("dart-feedback");
-    pressedButton.addEventListener("animationend", () => {
-      pressedButton.classList.remove("dart-feedback");
-    }, { once: true });
-  }
-  if (isDartRoulette(game)) {
-    if (isRouletteHit(game.currentThrows.at(-1), game.rouletteTarget)) {
-      const confirmedDart = game.currentThrows.at(-1);
-      window.setTimeout(() => {
-        if (state.activeGame === game && game.currentThrows.at(-1) === confirmedDart) submitRouletteTurn();
+  if (!isDartRoulette(game) && evaluateTurn(game).finished) {
+    submitRound();
+    window.requestAnimationFrame(() => document.querySelector(".winner")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  } else {
+    saveAndRenderMain();
+    if (isDartRoulette(game) && game.currentThrows.some((item) => isRouletteHit(item, game.rouletteTarget))) {
+      const expectedDarts = JSON.stringify(game.currentThrows);
+      rouletteHitTimer = window.setTimeout(() => {
+        if (state.activeGame === game && JSON.stringify(game.currentThrows) === expectedDarts) submitRouletteTurn();
       }, 350);
+    } else if (!isDartRoulette(game) && (correctingCheckout || state.sync.matchTombstones[game.id])) {
+      queueActiveGameSync(Number(game.revision || 0) - 1);
     }
-    return;
   }
-  if (evaluateTurn(game).terminal) {
-    // Let the confirmation show before scrolling the keypad out of view.
-    const confirmedDart = game.currentThrows[game.currentThrows.length - 1];
-    window.setTimeout(() => scrollToSubmitRound(game, confirmedDart), 300);
-  }
+  dartFeedbackTimer = window.setTimeout(() => {
+    dartFeedback = null;
+    app.querySelector(".input-announcement")?.remove();
+    app.querySelectorAll(".dart-feedback").forEach((button) => button.classList.remove("dart-feedback"));
+    app.querySelectorAll(".dart-change-pop").forEach((button) => button.classList.remove("dart-change-pop"));
+  }, 450);
 }
 
 function scrollToSubmitRound(game, confirmedDart) {
@@ -3159,16 +3312,22 @@ function recordDartDetails(player, throws) {
 }
 
 function removeLastDart() {
-  const game = state.activeGame;
-  if (!game || game.finishedAt || !game.currentThrows || game.currentThrows.length === 0) return;
+  const original = state.activeGame;
+  if (!original || (original.finishedAt && !original.checkoutEdit) || !getDartEntryGame(original).currentThrows.length) return;
+  const game = reopenCheckoutForEdit();
   game.currentThrows.pop();
-  saveAndRenderMain();
+  selectedDartIndex = game.currentThrows.length - 1;
+  replaceSelectedDart = false;
+  afterDartInput(null);
 }
 
 function clearThrows() {
-  if (!state.activeGame || state.activeGame.finishedAt) return;
-  state.activeGame.currentThrows = [];
-  saveAndRenderMain();
+  if (!state.activeGame || (state.activeGame.finishedAt && !state.activeGame.checkoutEdit)) return;
+  const game = reopenCheckoutForEdit();
+  game.currentThrows = [];
+  selectedDartIndex = -1;
+  replaceSelectedDart = false;
+  afterDartInput(null);
 }
 
 function togglePlayer(id) {
@@ -3476,6 +3635,8 @@ document.addEventListener("click", (event) => {
   if (action === "remove-guest") removeGuest(button.dataset.playerId);
   if (action === "start-game") startGame();
   if (action === "add-dart") addDart(button.dataset.value, button.dataset.label, button.dataset.type);
+  if (action === "select-dart") selectDart(Number(button.dataset.index));
+  if (action === "set-dart-type") setDartType(button.dataset.type);
   if (action === "remove-last-dart") removeLastDart();
   if (action === "clear-throws") clearThrows();
   if (action === "submit-round") submitRound();

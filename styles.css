@@ -1149,7 +1149,8 @@ button:disabled {
   gap: 5px;
 }
 
-.throw-list span {
+.throw-list span,
+.throw-list .dart-slot {
   min-width: 0;
   min-height: 28px;
   padding: 3px;
@@ -1162,6 +1163,76 @@ button:disabled {
   font-size: 0.82rem;
   font-weight: 900;
   overflow-wrap: anywhere;
+}
+
+.throw-list .dart-slot {
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.throw-list .dart-slot.selected {
+  border-color: #a78bfa;
+  background: rgba(124, 58, 237, 0.28);
+}
+
+.throw-list .dart-slot.is-unscored {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.throw-list .dart-slot:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.compact-dart-pad {
+  position: relative;
+}
+
+.dart-modifiers {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dart-modifier {
+  min-height: 44px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 7px;
+  background: #263449;
+  color: white;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.dart-modifier[aria-pressed="true"] {
+  border-color: #c4b5fd;
+  background: #6d28d9;
+}
+
+.input-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.dart-change-pop {
+  animation: dart-value-pop 260ms ease-out;
+}
+
+@keyframes dart-value-pop {
+  0% { transform: scale(0.94); }
+  45% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+.winner {
+  scroll-margin-top: calc(env(safe-area-inset-top, 0px) + var(--tabs-height) + 12px);
 }
 
 .throw-list .is-empty {
@@ -1204,7 +1275,8 @@ button:disabled {
   border-color: rgba(255, 255, 255, 0.18);
 }
 
-.dart-button.dart-feedback {
+.dart-button.dart-feedback,
+.dart-modifier.dart-feedback {
   animation: dart-confirm 280ms ease-out;
 }
 
@@ -1233,6 +1305,20 @@ button:disabled {
 
   .dart-button.dart-feedback {
     animation-name: dart-confirm-reduced;
+  }
+
+  .dart-modifier.dart-feedback {
+    animation-name: dart-confirm-reduced;
+  }
+
+  .dart-change-pop {
+    animation: none;
+  }
+
+  .dart-modifier,
+  .dart-modifier:active {
+    transition: none;
+    transform: none;
   }
 
   @keyframes dart-confirm-reduced {
