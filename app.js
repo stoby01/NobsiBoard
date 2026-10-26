@@ -104,6 +104,7 @@ let rouletteIntroTimer = null;
 let rouletteIntroRunId = 0;
 let updateReady = false;
 let updateApplying = false;
+let updateError = "";
 let updateWorker = null;
 let updateReloading = false;
 let updateCheckRunning = false;
@@ -471,9 +472,9 @@ function renderUpdateNotice() {
     <div class="update-notice" role="status">
       <div>
         <strong>${updateApplying ? "Update wird geladen" : "Update bereit"}</strong>
-        <p>${updateApplying ? "NobsiBoard startet gleich neu." : "Neue Version laden?"}</p>
+        <p>${updateError ? escapeHtml(updateError) : updateApplying ? "NobsiBoard startet gleich neu." : "Neue Version laden?"}</p>
       </div>
-      <button class="primary compact-button" data-action="apply-update" ${updateApplying ? "disabled" : ""}>${updateApplying ? "Laedt" : "Laden"}</button>
+      <button class="primary compact-button" data-action="apply-update" ${updateApplying ? "disabled" : ""}>${updateApplying ? "Laedt" : updateError ? "Erneut versuchen" : "Laden"}</button>
     </div>
   `;
 }
@@ -2953,11 +2954,25 @@ function closeWelcome() {
   saveAndRender();
 }
 
-function showUpdateReady(worker) {
+async function showUpdateReady(worker) {
   if (!worker) return;
+  const appScript = document.querySelector('script[src*="app.js"]');
+  const currentVersion = appScript ? new URL(appScript.src, window.location.href).searchParams.get("v") : "";
+  if (currentVersion && typeof caches !== "undefined") {
+    try {
+      const versions = (await caches.keys())
+        .map((name) => /^nobsiboard-v(\d+)$/.exec(name))
+        .filter(Boolean)
+        .map((match) => Number(match[1]));
+      if (versions.length && Math.max(...versions) === Number(currentVersion)) return;
+    } catch {
+      // A failed cache inspection must not hide a genuine update.
+    }
+  }
   updateWorker = worker;
   updateReady = true;
   updateApplying = false;
+  updateError = "";
   render();
 }
 
@@ -2983,34 +2998,48 @@ async function checkForAppUpdate() {
 }
 
 async function applyUpdate() {
-  updateApplying = true;
-  updateReady = true;
-  render();
-
+  if (updateApplying) return;
   try {
     const registration = serviceWorkerRegistration || await navigator.serviceWorker.getRegistration();
-    if (registration && typeof registration.update === "function") await registration.update().catch(() => {});
-    const worker = (registration && (registration.waiting || registration.installing)) || updateWorker;
-    if (worker) {
-      if (worker.state !== "activated") worker.postMessage({ type: "SKIP_WAITING" });
-      window.setTimeout(() => {
-        if (!updateReloading) {
-          updateReloading = true;
-          window.location.reload();
-        }
-      }, 1500);
+    const worker = (registration && registration.waiting) || updateWorker;
+    if (!worker || (worker.state !== "installed" && worker.state !== "activated")) {
+      updateError = "Update wird noch vorbereitet. Bitte erneut versuchen.";
+      render();
+      checkForAppUpdate();
       return;
     }
-  } catch {
-    // The reload below is the fallback for browsers with incomplete SW update support.
-  }
 
-  window.setTimeout(() => {
-    if (!updateReloading) {
-      updateReloading = true;
-      window.location.reload();
-    }
-  }, 250);
+    updateApplying = true;
+    updateError = "";
+    render();
+    if (worker.state === "installed") worker.postMessage({ type: "SKIP_WAITING" });
+
+    // controllerchange reloads after the new worker has activated and claimed this page.
+    window.setTimeout(() => {
+      if (updateReloading) return;
+      if (worker.state === "activated") {
+        updateReloading = true;
+        window.location.reload();
+        return;
+      }
+      if (navigator.onLine) {
+        // A fresh navigation URL bypasses the old worker's cached index.html.
+        // The new index.html references versioned assets, so they bypass its old cache too.
+        updateReloading = true;
+        const url = new URL(window.location.href);
+        url.searchParams.set("_nbupdate", String(Date.now()));
+        window.location.replace(url.href);
+        return;
+      }
+      updateApplying = false;
+      updateError = "Bitte zum Aktualisieren mit dem Internet verbinden.";
+      render();
+    }, 5000);
+  } catch {
+    updateApplying = false;
+    updateError = "Das Update konnte nicht geladen werden. Bitte erneut versuchen.";
+    render();
+  }
 }
 
 function addPlayer(name) {
@@ -3236,7 +3265,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 if ("serviceWorker" in navigator && navigator.serviceWorker) {
+  let hadServiceWorkerController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadServiceWorkerController && !updateApplying) {
+      hadServiceWorkerController = true;
+      return;
+    }
+    hadServiceWorkerController = true;
     if (updateReloading) return;
     updateReloading = true;
     window.location.reload();

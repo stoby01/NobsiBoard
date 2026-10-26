@@ -1,16 +1,18 @@
-const CACHE_NAME = "nobsiboard-v59";
+const CACHE_NAME = "nobsiboard-v60";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
+  "./styles.css?v=60",
+  "./app.js?v=60",
   "./manifest.webmanifest",
   "./logo-512.png",
   "./header-transparent.png"
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) =>
+    cache.addAll(ASSETS.map((asset) => new Request(asset, { cache: "reload" })))
+  ));
 });
 
 self.addEventListener("activate", (event) => {
@@ -18,19 +20,31 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      try {
+        return await fetch(event.request);
+      } catch (error) {
+        if (event.request.mode === "navigate") {
+          const fallback = await cache.match("./index.html");
+          if (fallback) return fallback;
+        }
+        throw error;
+      }
+    })
   );
 });
 
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") {
-    event.waitUntil(self.skipWaiting());
+    self.skipWaiting();
   }
 });

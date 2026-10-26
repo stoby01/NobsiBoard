@@ -13,7 +13,8 @@
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./logo-512.png" type="image/png">
     <link rel="apple-touch-icon" href="./logo-512.png">
-    <link rel="stylesheet" href="./styles.css">
+    <!-- Keep these asset versions aligned with CACHE_NAME and ASSETS in sw.js. -->
+    <link rel="stylesheet" href="./styles.css?v=60">
   </head>
   <body>
     <noscript>Diese App braucht JavaScript, um Punkte und Statistiken zu speichern.</noscript>
@@ -21,6 +22,6 @@
     <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js" defer></script>
     <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js" defer></script>
     <script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore-compat.js" defer></script>
-    <script src="./app.js" defer></script>
+    <script src="./app.js?v=60" defer></script>
   </body>
 </html>
