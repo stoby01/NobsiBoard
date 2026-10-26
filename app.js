@@ -507,7 +507,6 @@ function render() {
             <h1 class="header-logo">
               <img src="./header-transparent.png" alt="NobsiBoard">
             </h1>
-            <p class="subtitle">Einfach zaehlen, lokal speichern, spaeter feiern.</p>
           </div>
         </div>
         ${renderInstallButton()}
@@ -517,6 +516,7 @@ function render() {
         ${tabButton("game", "Spiel")}
         ${tabButton("stats", "Statistik")}
         ${tabButton("players", "Spieler")}
+        ${tabButton("connection", "Verbindung")}
       </nav>
       ${renderUpdateNotice()}
 
@@ -538,9 +538,10 @@ function render() {
 }
 
 function renderMainContent() {
-  if (state.activeView === "game") return renderSyncBadge() + renderGameView();
-  if (state.activeView === "stats") return renderSyncBadge() + renderStatsView();
-  if (state.activeView === "players") return renderSyncBadge() + renderPlayersView();
+  if (state.activeView === "game") return renderGameView();
+  if (state.activeView === "stats") return renderStatsView();
+  if (state.activeView === "players") return renderPlayersView();
+  if (state.activeView === "connection") return renderConnectionView();
   return "";
 }
 
@@ -575,7 +576,7 @@ function renderMainOnly() {
 
 function renderInstallButton() {
   if (isStandaloneApp()) {
-    return `<span class="install-state">Installiert</span>`;
+    return "";
   }
   return `<button class="install-button" data-action="install-app">App installieren</button>`;
 }
@@ -658,7 +659,7 @@ function renderGameView() {
   const checkout = mode.fixedCheckout || state.setup.checkout;
 
   return `
-    <section class="grid two-col">
+    <section class="grid">
       <div class="panel panel-pad">
         <div class="section-title">
           <h2>Neues Spiel</h2>
@@ -715,13 +716,6 @@ function renderGameView() {
         </div>
       </div>
 
-      <aside class="panel panel-pad">
-        <div class="section-title">
-          <h2>Schnellstart</h2>
-        </div>
-        <p class="hint">Waehle gespeicherte Spieler aus oder fuege Gaeste nur fuer diese Partie hinzu. ${mode.category === "dartmix" ? "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Gespeichert werden spaeter nur die festen Spieler."}</p>
-        ${renderSyncPanel()}
-      </aside>
     </section>
   `;
 }
@@ -1069,6 +1063,10 @@ function closeModePicker(apply = false) {
   modePickerOpen = false;
   saveAndRenderMain();
   app.querySelector('[data-action="open-mode-picker"]')?.focus();
+}
+
+function renderConnectionView() {
+  return `<section class="panel panel-pad connection-panel"><h2>Verbindung</h2>${renderSyncPanel()}</section>`;
 }
 
 function renderSyncPanel() {
