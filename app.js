@@ -44,8 +44,8 @@ const avatarOptions = {
 };
 
 const gameModes = [
-  { id: "classic-301", kind: "classic", category: "classic", name: "301", subtitle: "Kurz", startScore: 301, minPlayers: 2, fixedCheckout: null },
-  { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 2, fixedCheckout: null },
+  { id: "classic-301", kind: "classic", category: "classic", name: "301", subtitle: "Kurz", startScore: 301, minPlayers: 1, fixedCheckout: null },
+  { id: "classic-501", kind: "classic", category: "classic", name: "501", subtitle: "Klassisch", startScore: 501, minPlayers: 1, fixedCheckout: null },
   { id: "restjagd", kind: "restjagd", category: "dartmix", name: "Restjagd", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null },
   { id: "dartroulette", kind: "dartroulette", category: "dartmix", name: "DartRoulette", subtitle: "DartMix", minPlayers: 1, fixedCheckout: null }
 ];
@@ -383,6 +383,9 @@ function render() {
   const runningIntro = isRestjagdIntroVisible() && !restjagdIntro.settled
     ? app.querySelector(".restjagd-intro-backdrop") : isRouletteIntroVisible() && !rouletteIntro.settled
       ? app.querySelector(".roulette-intro-backdrop") : null;
+  const openAvatarBackdrop = avatarEditorPlayerId ? app.querySelector(".avatar-backdrop") : null;
+  const avatarScrollTop = openAvatarBackdrop?.querySelector(".avatar-fields")?.scrollTop || 0;
+  const focusedAvatarChoice = openAvatarBackdrop?.contains(document.activeElement) ? document.activeElement : null;
   app.innerHTML = `
     <div class="shell">
       <header class="topbar">
@@ -413,6 +416,11 @@ function render() {
     </div>
   `;
   if (runningIntro) app.querySelector(`.${runningIntro.classList[0]}`)?.replaceWith(runningIntro);
+  if (openAvatarBackdrop) {
+    app.querySelector(".avatar-backdrop")?.replaceWith(openAvatarBackdrop);
+    openAvatarBackdrop.querySelector(".avatar-fields").scrollTop = avatarScrollTop;
+    focusedAvatarChoice?.focus({ preventScroll: true });
+  }
   syncModePickerUI();
 }
 
@@ -445,7 +453,8 @@ function renderMainOnly() {
   }
   main.innerHTML = renderMainContent();
   const overlayRoot = app.querySelector("#overlay-root");
-  if (overlayRoot && !isRestjagdIntroVisible() && !isRouletteIntroVisible()) overlayRoot.innerHTML = renderOverlays();
+  if (overlayRoot && !isRestjagdIntroVisible() && !isRouletteIntroVisible()
+    && !(avatarEditorPlayerId && overlayRoot.querySelector(".avatar-editor"))) overlayRoot.innerHTML = renderOverlays();
   syncModePickerUI();
 }
 
@@ -579,6 +588,7 @@ function renderGameView() {
               ${guestPlayers.map((player) => renderGuestOption(player)).join("")}
             </div>
             ${playerCount < mode.minPlayers ? `<p class="footer-note">Waehle mindestens ${mode.minPlayers === 1 ? "einen Spieler" : "zwei Spieler"} oder fuege Gaeste hinzu.</p>` : ""}
+            ${mode.kind === "classic" && playerCount === 1 ? '<p class="hint">Solo-Runde: Wuerfe und Bestwerte werden gespeichert, aber keine Siege oder Ranglistenpunkte vergeben.</p>' : ""}
           </div>
 
           <form class="form-row compact-form" data-action="add-guest-form">
@@ -1187,13 +1197,14 @@ function renderScoreCard(player, active) {
 
 function renderWinner(game) {
   const winner = game.players.find((player) => player.id === game.winnerId);
+  const soloClassic = !isRestjagd(game) && game.players.length === 1;
   return `
     <div class="winner">
       <div class="winner-line">
         ${winner ? renderAvatar(winner, "small", "winner") : ""}
-        <h2>${escapeHtml(winner ? winner.name : "Gewinner")} gewinnt!</h2>
+        <h2>${soloClassic ? `${game.startScore} geschafft, ${escapeHtml(winner ? winner.name : "Spieler")}!` : `${escapeHtml(winner ? winner.name : "Gewinner")} gewinnt!`}</h2>
       </div>
-      <p>${isRestjagd(game) ? (game.players.length === 1 ? `Geschafft mit ${game.dartsThrown} Darts. ` : "") + "DartMix wird ohne Statistik und Spielhistorie gespielt." : "Das Spiel wurde gespeichert und ist jetzt in der Statistik."}</p>
+      <p>${isRestjagd(game) ? (game.players.length === 1 ? `Geschafft mit ${game.dartsThrown} Darts. ` : "") + "DartMix wird ohne Statistik und Spielhistorie gespielt." : soloClassic ? "Die Solo-Runde und deine Wurfwerte wurden gespeichert. Dafuer gibt es keine Siege oder Ranglistenpunkte." : "Das Spiel wurde gespeichert und ist jetzt in der Statistik."}</p>
       <div class="actions">
         ${isRestjagd(game) ? '<button class="primary" data-action="restjagd-rematch">Noch eine Runde</button>' : ""}
         <button class="${isRestjagd(game) ? "secondary" : "primary"}" data-action="new-game">Neues Spiel</button>
@@ -1204,7 +1215,8 @@ function renderWinner(game) {
 
 function renderStatsView() {
   const stats = getStats();
-  const ranked = [...stats.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || b.average - a.average);
+  const ranked = [...stats.values()].sort((a, b) => b.points - a.points || b.wins - a.wins
+    || b.competitiveAverage - a.competitiveAverage || a.name.localeCompare(b.name, "de-DE"));
   const recent = [...getClassicMatches()].slice(-6).reverse();
 
   if (activeStatsPlayerId) {
@@ -1263,7 +1275,7 @@ function renderRankRow(row, index) {
           ${renderAvatar(row, "tiny")}
           <strong>${escapeHtml(row.name)}</strong>
         </div>
-        <div class="metric-line">${row.wins} Siege - ${row.games} Spiele - Schnitt ${row.average}</div>
+        <div class="metric-line">${row.wins} Siege - ${row.games} Spiele${row.soloGames ? ` (${row.soloGames} Solo)` : ""} - Schnitt ${row.average}</div>
       </div>
       <span class="small-pill">${row.points} Pkt</span>
     </button>
@@ -1288,7 +1300,7 @@ function renderPlayerStatsView(row) {
           ${renderAvatar(row, "large", "active")}
           <div>
             <h2>${escapeHtml(row.name)}</h2>
-            <p class="hint">${row.games} Spiele - ${row.wins} Siege - ${row.losses} Niederlagen</p>
+            <p class="hint">${row.games} Spiele${row.soloGames ? ` (${row.soloGames} Solo)` : ""} - ${row.wins} Siege - ${row.losses} Niederlagen</p>
           </div>
         </div>
 
@@ -1485,16 +1497,17 @@ function renderGlobalHitDetails() {
 }
 
 function renderHistoryRow(match) {
+  const solo = match.players.length === 1;
   const winner = state.players.find((player) => player.id === match.winnerId) || match.players.find((player) => player.id === match.winnerId);
   const date = new Date(match.finishedAt).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
   return `
     <button class="history-row history-button" data-action="show-match-details" data-match-id="${escapeHtml(match.id)}">
       <div>
-        <strong>${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen</strong>
-        <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
+        <strong>${solo ? `${escapeHtml(winner ? winner.name : "Unbekannt")}: ${match.startScore} solo geschafft` : `${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen`}</strong>
+        <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${solo ? "Solo" : match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
         ${renderMatchHighlights(match)}
       </div>
-      <span class="small-pill">+3</span>
+      <span class="small-pill">${solo ? "Solo" : "+3"}</span>
     </button>
   `;
 }
@@ -1661,7 +1674,7 @@ function renderAvatarEditor() {
   if (!player) return "";
   const avatar = normalizeAvatar(player.avatar, player.color);
   return `
-    <div class="modal-backdrop">
+    <div class="modal-backdrop avatar-backdrop">
       <section class="avatar-editor" role="dialog" aria-modal="true" aria-label="Figur erstellen">
         <div class="editor-head">
           <div>
@@ -1675,6 +1688,7 @@ function renderAvatarEditor() {
           ${renderAvatar({ ...player, avatar }, "large", "active")}
         </div>
 
+        <div class="avatar-fields" aria-label="Avatar anpassen">
         ${renderAvatarField("Haut", "skin", avatarOptions.skin, avatar.skin, "color")}
         ${renderAvatarField("Haare", "hair", avatarOptions.hair, avatar.hair, "label")}
         ${renderAvatarField("Haarfarbe", "hairColor", avatarOptions.hairColor, avatar.hairColor, "color")}
@@ -1688,6 +1702,7 @@ function renderAvatarEditor() {
         ${renderAvatarField("Trikot", "shirt", avatarOptions.shirt, avatar.shirt, "color")}
         ${renderAvatarField("Trikotmuster", "shirtPattern", avatarOptions.shirtPattern, avatar.shirtPattern, "label")}
         ${renderAvatarField("Extra", "accessory", avatarOptions.accessory, avatar.accessory, "label")}
+        </div>
       </section>
     </div>
   `;
@@ -1703,7 +1718,7 @@ function renderAvatarField(title, field, values, current, type) {
           const content = type === "color"
             ? `<span class="swatch" style="background:${value}"></span>`
             : escapeHtml(getAvatarLabel(field, value));
-          return `<button class="avatar-choice ${active ? "active" : ""}" data-action="set-avatar" data-field="${field}" data-value="${value}" aria-label="${escapeHtml(title)} ${escapeHtml(getAvatarLabel(field, value))}">${content}</button>`;
+          return `<button class="avatar-choice ${active ? "active" : ""}" data-action="set-avatar" data-field="${field}" data-value="${value}" aria-label="${escapeHtml(title)} ${escapeHtml(getAvatarLabel(field, value))}" aria-pressed="${active}">${content}</button>`;
         }).join("")}
       </div>
     </div>
@@ -1735,6 +1750,11 @@ function getStats() {
       color: player.color,
       avatar: normalizeAvatar(player.avatar, player.color),
       games: 0,
+      competitiveGames: 0,
+      soloGames: 0,
+      competitiveThrowsTotal: 0,
+      competitiveRounds: 0,
+      competitiveAverage: 0,
       wins: 0,
       losses: 0,
       points: 0,
@@ -1752,12 +1772,19 @@ function getStats() {
   });
 
   getClassicMatches().forEach((match) => {
+    const solo = match.players.length === 1;
     match.players.forEach((snapshot) => {
       const row = stats.get(snapshot.id);
       if (!row) return;
       row.games += 1;
+      if (solo) row.soloGames += 1;
+      else row.competitiveGames += 1;
       row.rounds += snapshot.rounds;
       row.throwsTotal += snapshot.throwsTotal;
+      if (!solo) {
+        row.competitiveRounds += snapshot.rounds;
+        row.competitiveThrowsTotal += snapshot.throwsTotal;
+      }
       row.highestThrow = Math.max(row.highestThrow, snapshot.highestThrow);
       row.totalDarts += snapshot.totalDarts || 0;
       mergeCounts(row.dartCounts, snapshot.dartCounts);
@@ -1765,10 +1792,11 @@ function getStats() {
       if (Array.isArray(snapshot.roundScores)) {
         row.roundScores.push(...snapshot.roundScores);
       }
-      if (snapshot.id === match.winnerId) {
+      // Solo rounds count towards throwing records, never towards the head-to-head ranking.
+      if (!solo && snapshot.id === match.winnerId) {
         row.wins += 1;
         row.points += 3;
-      } else {
+      } else if (!solo) {
         row.losses += 1;
       }
     });
@@ -1776,8 +1804,9 @@ function getStats() {
 
   stats.forEach((row) => {
     row.average = row.rounds ? round(row.throwsTotal / row.rounds) : 0;
+    row.competitiveAverage = row.competitiveRounds ? round(row.competitiveThrowsTotal / row.competitiveRounds) : 0;
     row.bestRound = row.roundScores.length ? Math.max(...row.roundScores) : row.highestThrow;
-    row.winRate = row.games ? Math.round((row.wins / row.games) * 100) : 0;
+    row.winRate = row.competitiveGames ? Math.round((row.wins / row.competitiveGames) * 100) : 0;
   });
 
   return stats;
@@ -2857,7 +2886,18 @@ function setAvatarPart(field, value) {
   player.avatar[field] = value;
   if (field === "shirt") player.color = value;
   player.updatedAt = new Date().toISOString();
-  saveAndRender();
+  const editor = app.querySelector(".avatar-editor");
+  if (editor) {
+    const preview = editor.querySelector(".editor-preview");
+    if (preview) preview.innerHTML = renderAvatar(player, "large", "active");
+    editor.querySelectorAll(".avatar-choice").forEach((choice) => {
+      if (choice.dataset.field !== field) return;
+      const active = choice.dataset.value === value;
+      choice.classList.toggle("active", active);
+      choice.setAttribute("aria-pressed", String(active));
+    });
+  }
+  saveAndRenderMain();
   queueSync();
 }
 

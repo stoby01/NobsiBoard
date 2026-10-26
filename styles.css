@@ -1759,6 +1759,7 @@ button:disabled {
 
 .editor-preview {
   min-height: 180px;
+  overflow: hidden;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
@@ -1766,6 +1767,41 @@ button:disabled {
   background:
     radial-gradient(circle at 50% 32%, rgba(245, 158, 11, 0.14), transparent 8rem),
     #f8fafc;
+}
+
+/* Keep the avatar in view while only the choices scroll. */
+.avatar-editor {
+  width: min(100%, 900px);
+  height: min(86dvh, 760px);
+  max-height: calc(100dvh - 28px);
+  overflow: hidden;
+  grid-template-columns: minmax(180px, 250px) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.avatar-editor .editor-head {
+  grid-column: 1 / -1;
+}
+
+.avatar-editor .editor-preview {
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 220px;
+  align-self: start;
+}
+
+.avatar-fields {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 0 5px 8px 0;
 }
 
 .avatar-field {
@@ -2023,6 +2059,28 @@ button:disabled {
 }
 
 @media (max-width: 760px) {
+  .avatar-editor {
+    height: min(90dvh, 760px);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .avatar-editor .editor-preview {
+    grid-column: 1;
+    grid-row: 2;
+    height: 140px;
+    min-height: 140px;
+  }
+
+  .avatar-editor .editor-preview .mi-large {
+    scale: .72;
+  }
+
+  .avatar-fields {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
   .shell {
     padding-left: 10px;
     padding-right: 10px;
@@ -2096,6 +2154,31 @@ button:disabled {
 
   .frequency-row {
     grid-template-columns: 56px 1fr auto;
+  }
+}
+
+@media (max-height: 500px) {
+  .avatar-editor {
+    height: calc(100dvh - 28px);
+    grid-template-columns: minmax(130px, 26%) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .avatar-editor .editor-preview {
+    grid-column: 1;
+    grid-row: 2;
+    height: 140px;
+    min-height: 140px;
+  }
+
+  .avatar-editor .editor-preview .mi-large {
+    scale: .68;
+  }
+
+  .avatar-fields {
+    grid-column: 2;
+    grid-row: 2;
   }
 }
 
