@@ -1413,6 +1413,7 @@ function renderBestStats(ranked) {
   const highest = [...ranked].filter((row) => row.rounds > 0).sort((a, b) => b.highestThrow - a.highestThrow)[0];
   const bestAverage = [...ranked].filter((row) => row.rounds > 0).sort((a, b) => b.average - a.average)[0];
   const highestNames = highest ? ranked.filter((row) => row.rounds > 0 && row.highestThrow === highest.highestThrow).map((row) => row.name).join(", ") : "-";
+  const highestRoutes = highest ? getHighestThrowRoutes(highest.highestThrow, ranked) : [];
   const bestAverageNames = bestAverage ? ranked.filter((row) => row.rounds > 0 && row.average === bestAverage.average).map((row) => row.name).join(", ") : "-";
   const t20Hunter = [...ranked]
     .map((row) => ({ name: row.name, count: Number((row.dartCounts || {})["T20"] || 0) }))
@@ -1424,7 +1425,7 @@ function renderBestStats(ranked) {
     <div class="stats-grid">
       <div class="stat-box"><span class="stat-value">${played}</span><span class="stat-label">Spiele</span></div>
       <div class="stat-box"><span class="stat-value">${mostWins ? escapeHtml(mostWins.name) : "-"}</span><span class="stat-label">Meiste Siege</span></div>
-      <div class="stat-box"><span class="stat-value">${highest ? highest.highestThrow : 0}</span><span class="stat-label">Hoechster Wurf</span><span class="stat-owner">${escapeHtml(highestNames)}</span></div>
+      <div class="stat-box"><span class="stat-value">${highest ? highest.highestThrow : 0}</span><span class="stat-label">Hoechster Wurf</span><span class="stat-owner">${escapeHtml(highestNames)}</span>${highestRoutes.map((route) => `<span class="stat-route">${highestRoutes.length > 1 ? `${escapeHtml(route.name)}: ` : ""}${route.darts.map((dart) => escapeHtml(dart.label)).join(" · ")}</span>`).join("")}</div>
       <div class="stat-box"><span class="stat-value">${bestAverage ? bestAverage.average : 0}</span><span class="stat-label">Bester Schnitt</span><span class="stat-owner">${escapeHtml(bestAverageNames)}</span></div>
       <div class="stat-box">
         <span class="stat-value stat-inline">
@@ -1435,6 +1436,30 @@ function renderBestStats(ranked) {
       </div>
     </div>
   `;
+}
+
+function getRecordedRoundDarts(round, score) {
+  if (!round || round.bust || !Array.isArray(round.darts) || !round.darts.length) return null;
+  if (score !== undefined && Number(round.score) !== score) return null;
+  const darts = round.darts.filter((dart) => dart && dart.label && Number.isFinite(Number(dart.value)));
+  if (darts.length !== round.darts.length) return null;
+  if (score !== undefined && darts.reduce((total, dart) => total + Number(dart.value), 0) !== score) return null;
+  return darts;
+}
+
+function getHighestThrowRoutes(score, ranked) {
+  const leaders = new Map(ranked.filter((row) => row.rounds > 0 && row.highestThrow === score).map((row) => [row.id, row.name]));
+  const routes = new Map();
+  getClassicMatches().forEach((match) => (match.players || []).forEach((player) => {
+    if (!leaders.has(player.id)) return;
+    (player.roundDetails || []).forEach((round) => {
+      const darts = getRecordedRoundDarts(round, score);
+      if (!darts) return;
+      const key = `${player.id}:${darts.map((dart) => dart.label).join(",")}`;
+      if (!routes.has(key)) routes.set(key, { name: leaders.get(player.id), darts });
+    });
+  }));
+  return [...routes.values()];
 }
 
 function getGlobalFeaturedCounts() {
@@ -1570,11 +1595,15 @@ function renderMatchHighlights(match) {
   const highlights = featuredHistoryDarts
     .map((dart) => ({ ...dart, count: Number(counts[dart.label] || 0) }))
     .filter((dart) => dart.count > 0);
-  if (!highlights.length) return "";
+  const winner = (match.players || []).find((player) => player.id === match.winnerId);
+  const finalRound = winner && Array.isArray(winner.roundDetails) ? winner.roundDetails[winner.roundDetails.length - 1] : null;
+  const finishDarts = getRecordedRoundDarts(finalRound);
+  if (!highlights.length && !finishDarts) return "";
 
   return `
-    <div class="history-highlights" aria-label="Hohe Treffer in diesem Spiel">
+    <div class="history-highlights" aria-label="Besondere Würfe und Finish in diesem Spiel">
       ${highlights.map((dart) => `<span class="history-dart-chip ${dart.type}"><span>${dart.label}</span><strong>${dart.count}x</strong></span>`).join("")}
+      ${finishDarts ? `<span class="history-dart-chip finish"><span>Finish</span><strong>${finishDarts.map((dart) => escapeHtml(dart.label)).join(" · ")}</strong></span>` : ""}
     </div>
   `;
 }

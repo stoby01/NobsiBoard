@@ -1382,6 +1382,15 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.stat-route {
+  display: block;
+  margin-top: 4px;
+  color: #6d28d9;
+  font-size: 0.84rem;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
 .stat-inline {
   display: flex;
   align-items: baseline;
@@ -1499,6 +1508,10 @@ button:disabled {
 
 .history-dart-chip.bullseye {
   background: #dc2626;
+}
+
+.history-dart-chip.finish {
+  background: #6d28d9;
 }
 
 .match-details-card {
