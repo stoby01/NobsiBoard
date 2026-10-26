@@ -62,13 +62,12 @@ test("a live game acknowledgement cannot hide an unsent finished match", async (
   assert.match(h.run('getSyncDisplay().detail'), /1 Spiel/);
 });
 
-test("a concurrent game change keeps local darts until the player chooses a version", () => {
+test("a concurrent game change keeps local darts automatically without a selection dialog", () => {
   const h = harness();
   h.run('state.setup.selectedPlayerIds=[state.players[0].id];startGame();addDart(20,"20","single")');
-  h.run('const remote=clone(state.activeGame);remote.revision=5;remote.deviceId="another-device";showActiveGameConflict(remote)');
+  h.run('const remote=clone(state.activeGame);remote.revision=5;remote.deviceId="another-device";keepLocalActiveGame(remote)');
   assert.equal(h.run('state.activeGame.currentThrows.length'), 1);
-  assert.equal(h.run('getSyncDisplay().status'), "error");
-  h.run('resolveActiveGameConflict(true)');
+  assert.doesNotMatch(h.run('renderOverlays()'), /Zwei Spielstände|Sync-Konflikt/);
   assert.equal(h.run('state.activeGame.currentThrows.length'), 1);
   assert.equal(h.run('state.activeGame.revision'), 6);
   assert.equal(h.run('state.sync.pending.activeGame.baseRevision'), 5);

@@ -2198,30 +2198,6 @@ button:disabled {
 .sync-badge.offline { background: #fffbeb; }
 .sync-badge.error { background: #fef2f2; }
 
-.sync-conflict-card {
-  max-height: min(88dvh, 700px);
-  overflow-y: auto;
-  display: grid;
-  gap: 12px;
-}
-
-.sync-conflict-options {
-  display: grid;
-  gap: 8px;
-}
-
-.sync-conflict-options > div {
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  overflow-wrap: anywhere;
-}
-
-.sync-conflict-options p {
-  margin-top: 4px;
-  color: var(--muted);
-}
-
 .sync-row {
   display: grid;
   grid-template-columns: auto 1fr;

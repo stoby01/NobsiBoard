@@ -150,7 +150,6 @@ let syncTimer = null;
 let syncRunning = false;
 let familySyncRevision = 0;
 let knownRemoteMatchIds = new Set();
-let activeGameConflict = null;
 let localSaveFailed = false;
 let syncRuntime = {
   status: navigator.onLine ? "syncing" : "offline",
@@ -467,7 +466,6 @@ function getSyncDisplay() {
   if (pending.activeClear) parts.push("Partieabschluss");
   const localInput = Boolean(state.activeGame && !state.activeGame.finishedAt && (state.activeGame.currentThrows || []).length);
   const waiting = parts.length ? `Noch nicht online bestätigt: ${parts.join(" · ")}.` : "";
-  if (activeGameConflict) return { status: "error", label: "Sync-Konflikt", detail: syncRuntime.detail || "Bitte einen Spielstand wählen." };
   if (!navigator.onLine) return {
     status: "offline",
     label: parts.length || localInput ? "Offline · lokal gespeichert" : "Offline bereit",
@@ -486,7 +484,7 @@ function getSyncDisplay() {
 function renderSyncBadge() {
   const display = getSyncDisplay();
   const pending = state.sync.pending || {};
-  const retry = navigator.onLine && !localSaveFailed && !activeGameConflict
+  const retry = navigator.onLine && !localSaveFailed
     && (display.status === "error" || (display.status === "pending"
       && (pending.players || (pending.matches || []).length || pending.activeGame || pending.activeClear)));
   return `<div class="sync-badge ${display.status}" role="status" aria-live="polite"><span class="sync-dot ${display.status}" aria-hidden="true"></span><strong>${escapeHtml(display.label)}</strong><span>${escapeHtml(display.detail)}</span>${retry ? '<button class="sync-retry" data-action="sync-now">Jetzt prüfen</button>' : ""}</div>`;
@@ -567,7 +565,6 @@ function renderOverlays() {
     ${activeMatchId ? renderMatchDetails() : ""}
     ${activeGlobalHitCategory ? renderGlobalHitDetails() : ""}
     ${checkoutHelpOpen ? renderCheckoutHelpDetails() : ""}
-    ${activeGameConflict ? renderActiveGameConflict() : ""}
   `;
 }
 
@@ -2053,7 +2050,6 @@ function changeFamilyCode(code) {
   stopFamilyDataWatchers();
   stopActiveGameWatcher();
   state.message = "Familien-Code geaendert.";
-  activeGameConflict = null;
   familyCodeEditorOpen = false;
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Neue Familie wird abgeglichen." : "Offline. Der neue Code wird spaeter abgeglichen.", "", false);
   saveAndRender();
@@ -2144,7 +2140,6 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
   guestPlayers = [];
   avatarEditorPlayerId = null;
   activeStatsPlayerId = null;
-  activeGameConflict = null;
   knownRemoteMatchIds = new Set();
   modePickerOpen = false;
 }
@@ -2293,18 +2288,24 @@ function watchActiveGame(familyRef) {
     if (!remoteGame) return;
     if (state.sync.pending.activeClear && state.sync.pending.activeClear.id === remoteGame.id) return;
     const localGame = state.activeGame;
+    if (localGame && (localGame.supersededGameIds || []).includes(remoteGame.id)) return;
+    const replacesLocal = localGame && (remoteGame.supersededGameIds || []).includes(localGame.id);
     const remoteRevision = Number(remoteGame.revision || 0);
     const localRevision = Number(localGame && localGame.revision || 0);
     const remoteIsNewer = !localGame
       || remoteGame.id !== localGame.id
       || remoteRevision > localRevision
       || (remoteRevision === localRevision && getTime(remoteGame.updatedAt) > getTime(localGame.updatedAt));
-    if (!remoteIsNewer || remoteGame.deviceId === DEVICE_ID) return;
-    if (localGame && (state.sync.pending.activeGame || (localGame.currentThrows || []).length)) {
-      showActiveGameConflict(remoteGame);
+    if (!remoteIsNewer || (remoteGame.deviceId === DEVICE_ID && remoteGame.id === localGame?.id)) return;
+    if (localGame && !replacesLocal && (state.sync.pending.activeGame || (localGame.currentThrows || []).length)) {
+      keepLocalActiveGame(remoteGame);
       return;
     }
 
+    if (localGame && state.sync.pending.activeGame?.id === localGame.id) {
+      state.sync.pending.activeGame = null;
+      activeGameSyncPendingRevision = null;
+    }
     state.activeGame = remoteGame;
     state.message = "Die laufende Partie wurde von einem anderen Geraet aktualisiert.";
     saveAndRenderMain();
@@ -2316,51 +2317,19 @@ function watchActiveGame(familyRef) {
   });
 }
 
-function showActiveGameConflict(remoteGame) {
-  if (activeGameConflict && activeGameConflict.remoteGame.id === remoteGame.id
-    && activeGameConflict.remoteGame.revision === remoteGame.revision) return;
-  activeGameConflict = { remoteGame };
-  checkoutHelpOpen = false;
-  state.message = "Diese Partie wurde auf einem anderen Gerät geändert. Wähle den Spielstand aus.";
-  setSyncRuntime("error", "Zwei Geräte haben diese Partie geändert. Bitte einen Stand wählen.", "", false);
-  saveState();
-  render();
-}
-
-function renderActiveGameConflict() {
-  if (!activeGameConflict) return "";
-  const local = state.activeGame;
-  const remote = activeGameConflict.remoteGame;
-  const summary = (game) => game ? `${game.players.map((player) => `${escapeHtml(player.name)}: ${Number(player.remaining || 0)}`).join(" · ")}${game.currentThrows && game.currentThrows.length ? ` · Eingabe: ${game.currentThrows.map((dart) => escapeHtml(dart.label)).join(" + ")}` : ""}` : "Kein laufendes Spiel";
-  return `<div class="modal-backdrop"><section class="install-card sync-conflict-card" role="dialog" aria-modal="true" aria-label="Sync-Konflikt">
-    <h2>Zwei Spielstände vorhanden</h2>
-    <p class="hint">Deine lokale Eingabe bleibt erhalten, bis du einen Stand auswählst.</p>
-    <div class="sync-conflict-options"><div><strong>Dieses Gerät</strong><p>${summary(local)}</p></div><div><strong>Familie</strong><p>${summary(remote)}</p></div></div>
-    <button class="primary" data-action="keep-local-game">Dieses Gerät behalten</button>
-    <button class="secondary" data-action="accept-family-game">Familienstand laden</button>
-  </section></div>`;
-}
-
-function resolveActiveGameConflict(keepLocal) {
-  if (!activeGameConflict) return;
-  const remote = activeGameConflict.remoteGame;
-  activeGameConflict = null;
-  if (keepLocal && state.activeGame) {
-    state.activeGame.revision = Math.max(Number(state.activeGame.revision || 0), Number(remote.revision || 0)) + 1;
-    state.activeGame.updatedAt = new Date().toISOString();
-    state.activeGame.deviceId = DEVICE_ID;
-    state.sync.pending.activeGame = null;
-    state.message = "Lokaler Spielstand wird an die Familie übertragen.";
-    saveAndRender();
-    queueActiveGameSync(Number(remote.revision || 0));
-    return;
+function keepLocalActiveGame(remoteGame) {
+  const game = state.activeGame;
+  if (!game) return;
+  if (remoteGame.id !== game.id) {
+    game.supersededGameIds = [...new Set([...(game.supersededGameIds || []), remoteGame.id])].slice(-64);
   }
-  state.activeGame = remote;
+  game.revision = Math.max(Number(game.revision || 0), Number(remoteGame.revision || 0)) + 1;
+  game.updatedAt = new Date().toISOString();
+  game.deviceId = DEVICE_ID;
   state.sync.pending.activeGame = null;
-  activeGameSyncPendingRevision = null;
-  state.message = "Familienstand wurde geladen.";
-  setSyncRuntime("synced", "Laufende Partie aus der Familie geladen.", "", false);
-  saveAndRender();
+  state.message = "";
+  queueActiveGameSync(Number(remoteGame.revision || 0));
+  saveAndRenderMain();
 }
 
 function watchFamilyData(familyRef) {
@@ -2667,9 +2636,12 @@ async function syncActiveGame() {
     const db = await ensureFirebaseSession();
     const activeGameRef = db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current");
     await db.runTransaction(async (transaction) => {
+      if (state.activeGame?.id !== game.id) throw new Error("ACTIVE_GAME_SUPERSEDED");
       const snapshot = await transaction.get(activeGameRef);
+      if (state.activeGame?.id !== game.id) throw new Error("ACTIVE_GAME_SUPERSEDED");
       const remoteRevision = snapshot.exists ? Number(snapshot.data().revision || 0) : -1;
-      if (snapshot.exists && (snapshot.data().id !== game.id || remoteRevision > expectedRevision)) {
+      const replacesRemote = snapshot.exists && (game.supersededGameIds || []).includes(snapshot.data().id);
+      if (snapshot.exists && !replacesRemote && (snapshot.data().id !== game.id || remoteRevision > expectedRevision)) {
         throw new Error("ACTIVE_GAME_CONFLICT");
       }
       transaction.set(activeGameRef, {
@@ -2687,12 +2659,14 @@ async function syncActiveGame() {
     }
     setSyncRuntime("synced", "Laufende Partie synchron.", "", false);
   } catch (error) {
+    if (error?.message === "ACTIVE_GAME_SUPERSEDED" || state.activeGame?.id !== game.id) return;
     if (error && error.message === "ACTIVE_GAME_CONFLICT") {
       try {
         const db = await ensureFirebaseSession();
         const snapshot = await db.collection("families").doc(state.sync.familyCode).collection("activeGames").doc("current").get();
+        if (state.activeGame?.id !== game.id) return;
         const remoteGame = snapshot.exists ? normalizeRemoteActiveGame(snapshot.data()) : null;
-        if (remoteGame) showActiveGameConflict(remoteGame);
+        if (remoteGame) keepLocalActiveGame(remoteGame);
         else setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
       } catch {
         setSyncRuntime("error", "Konflikt bei der laufenden Partie.", "", false);
@@ -2714,7 +2688,7 @@ async function syncActiveGame() {
 
 function resumePendingActiveGameSync() {
   const pending = state.sync.pending.activeGame;
-  if (!navigator.onLine || activeGameConflict || !pending || !state.activeGame
+  if (!navigator.onLine || !pending || !state.activeGame
     || state.activeGame.id !== pending.id || state.sync.pending.activeClear) return;
   activeGameSyncPendingRevision = pending.baseRevision;
   syncActiveGame();
@@ -2788,6 +2762,7 @@ function normalizeRemoteActiveGame(data) {
     rouletteTarget: data.rouletteTarget || null,
     dartsThrown: Number(data.dartsThrown || 0),
     lastSavedRound: Array.isArray(data.lastSavedRound) ? data.lastSavedRound : [],
+    supersededGameIds: Array.isArray(data.supersededGameIds) ? data.supersededGameIds.map(String).slice(-64) : [],
     currentIndex: Math.max(0, Math.min(Number(data.currentIndex || 0), base.players.length - 1)),
     currentThrows: Array.isArray(data.currentThrows)
       ? data.currentThrows.map((dart) => ({
@@ -2893,6 +2868,7 @@ function prepareActiveGameForRemote(game) {
     startingIndex: game.startingIndex || 0,
     dartsThrown: game.dartsThrown || 0,
     lastSavedRound: game.lastSavedRound || [],
+    supersededGameIds: game.supersededGameIds || [],
     startScore: game.startScore,
     createdAt: game.createdAt,
     finishedAt: game.finishedAt || null,
@@ -2926,6 +2902,7 @@ function createGame(players, setup, startingIndex = 0, revision = 0) {
   return {
     id: createId(),
     mode: restjagd ? "restjagd" : roulette ? "dartroulette" : "classic",
+    supersededGameIds: setup.id ? [...new Set([...(setup.supersededGameIds || []), setup.id])].slice(-64) : [],
     startScore,
     rouletteScope: roulette ? rouletteScope : null,
     rouletteRound: roulette ? 1 : null,
@@ -3623,8 +3600,6 @@ document.addEventListener("click", (event) => {
     checkoutHelpOpen = false;
     render();
   }
-  if (action === "keep-local-game") resolveActiveGameConflict(true);
-  if (action === "accept-family-game") resolveActiveGameConflict(false);
   if (action === "set-roulette-scope" && !state.activeGame && getSetupMode().kind === "dartroulette") {
     state.setup.rouletteScope = button.dataset.scope === "all" ? "all" : "single";
     saveAndRender();
