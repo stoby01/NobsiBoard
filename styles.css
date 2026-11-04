@@ -2760,3 +2760,19 @@ body.roulette-intro-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .ai-dart.revealed { animation: none; }
 }
+.starting-results { display: grid; gap: 8px; margin-top: 16px; }
+.starting-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #f1f5f9;
+}
+.starting-result.active { outline: 2px solid #0f766e; }
+.starting-result strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.starting-result > span { font-weight: 700; font-size: .85rem; }
+.starting-winner { text-align: center; }
+.starting-winner h2 { overflow-wrap: anywhere; margin-bottom: 16px; }
+.start-selection .throw-summary > .primary { width: 100%; }
+.start-selection .turn-head .hint { color: rgba(255,255,255,.72); }

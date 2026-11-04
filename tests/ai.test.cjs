@@ -19,6 +19,14 @@ function harness(saved) {
   });
   context.window = context;
   vm.runInContext(source+'\nfunction isSyncEnabled(){return false;}',context);
+  // These regression scenarios begin after the starting-player phase.
+  vm.runInContext(`const createGameWithSelection = createGame;
+    createGame = (...args) => {
+      const game = createGameWithSelection(...args);
+      game.startSelection = null;
+      game.currentIndex = game.startingIndex;
+      return game;
+    };`, context);
   const run = code => vm.runInContext(code,context);
   return {run,storage,json:code=>JSON.parse(JSON.stringify(run(code))),tick:delay=>{
     const ready=[...timers].filter(([,timer])=>timer.delay===delay);

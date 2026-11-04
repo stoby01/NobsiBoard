@@ -10,6 +10,14 @@ function harness(){
   localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},
   confirm:()=>true,addEventListener(){},setTimeout:()=>1,clearTimeout(){},setInterval:()=>1,requestAnimationFrame:()=>1,matchMedia:()=>({matches:false}),location:{reload(){}}
  });context.window=context;vm.runInContext(source,context);
+  // These regression scenarios begin after the starting-player phase.
+  vm.runInContext(`const createGameWithSelection = createGame;
+    createGame = (...args) => {
+      const game = createGameWithSelection(...args);
+      game.startSelection = null;
+      game.currentIndex = game.startingIndex;
+      return game;
+    };`, context);
  const run=code=>vm.runInContext(code,context);
  run(`window.firebase={firestore:{FieldValue:{serverTimestamp:()=>new Date().toISOString()}}};
  let remote=null;let emitActive=null;let writes=[];

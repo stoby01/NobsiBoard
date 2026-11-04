@@ -18,6 +18,14 @@ function harness() {
   });
   context.window = context;
   vm.runInContext(source, context);
+  // These regression scenarios begin after the starting-player phase.
+  vm.runInContext(`const createGameWithSelection = createGame;
+    createGame = (...args) => {
+      const game = createGameWithSelection(...args);
+      game.startSelection = null;
+      game.currentIndex = game.startingIndex;
+      return game;
+    };`, context);
   const run = (code) => vm.runInContext(code, context);
   return { run, navigator, storage };
 }
