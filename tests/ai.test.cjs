@@ -175,13 +175,13 @@ test('AI turns auto-complete once, block manual darts and ignore stale callbacks
   assert.equal(h.run('isAiTurn(state.activeGame)'), true);
   h.run('addDart(60,"T20","triple");submitRound();undo()');
   assert.equal(h.run('state.activeGame.currentThrows.length'), 0);
-  h.tick(350); h.tick(500); h.tick(500); h.tick(500);
+  h.tick(650); h.tick(900); h.tick(900); h.tick(900);
   assert.equal(h.run('state.activeGame.currentIndex'), 0);
   const revision = h.run('state.activeGame.revision');
   h.run('finishAiTurn()');
   assert.equal(h.run('state.activeGame.revision'), revision);
   h.run('addDart(20,"20","single");submitRound();leaveGame()');
-  h.tick(350);h.tick(500);
+  h.tick(650);h.tick(900);
   assert.equal(h.run('state.activeGame'), null);
 });
 test('human victories count normally, AI level survives normalization and AI hits stay out of global records', () => {

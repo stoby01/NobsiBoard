@@ -223,7 +223,7 @@ function scheduleAiTurn() {
   if (aiPlayback?.key === key) return;
   window.clearTimeout(aiTimer);
   aiPlayback = { key, darts: planAiTurn(game), revealed: 0 };
-  aiTimer = window.setTimeout(advanceAiPlayback, 350);
+  aiTimer = window.setTimeout(advanceAiPlayback, 650);
 }
 
 function advanceAiPlayback() {
@@ -232,7 +232,7 @@ function advanceAiPlayback() {
   if (aiPlayback.revealed < aiPlayback.darts.length) {
     aiPlayback.revealed++;
     renderMainOnly();
-    aiTimer = window.setTimeout(advanceAiPlayback, 500);
+    aiTimer = window.setTimeout(advanceAiPlayback, 900);
   } else finishAiTurn();
 }
 
