@@ -2260,6 +2260,7 @@ function resetLocalFamilyState(familyCode, resetAt = new Date().toISOString(), m
     players: [],
     matches: [],
     setup: {
+      ...clone(defaultState.setup),
       mode: "classic",
       startScore: 501,
       checkout: "straight",

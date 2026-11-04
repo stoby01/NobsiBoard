@@ -28,6 +28,11 @@ function harness(saved) {
 function startAi(h, level = 3) {
   h.run(`state.setup.aiEnabled=true;state.setup.aiLevel=${level};state.setup.selectedPlayerIds=[state.players[0].id];startGame()`);
 }
+test('family reset retains usable AI defaults',()=>{
+  const h=harness();
+  h.run('resetLocalFamilyState("TEST-FAMILY");state.players=[createPlayer("Lokaler Test",colors[0])];state.setup.selectedPlayerIds=[state.players[0].id];state.setup.aiEnabled=true;startGame()');
+  assert.equal(h.run('state.activeGame.players[1].aiLevel'),3);
+});
 test('all levels exhaust their name pool before reuse, including reload', () => {
   const h = harness();
   for (let level = 1; level <= 7; level++) {
