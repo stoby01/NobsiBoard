@@ -2731,3 +2731,32 @@ body.roulette-intro-open { overflow: hidden; }
   .roulette-intro-card .roulette-board { grid-column: 2; grid-row: 1 / span 4; width: min(56dvh, 240px); }
   .roulette-intro-card .roulette-intro-skip { min-height: 38px; }
 }
+.ai-levels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.ai-levels .choice { min-height: 68px; white-space: normal; }
+.ai-turn h2 { overflow-wrap: anywhere; }
+.ai-darts { display: flex; gap: 12px; margin: 20px 0; }
+.ai-dart {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 80px;
+  border-radius: 16px;
+  background: #172b40;
+  color: white;
+  font-size: clamp(24px, 5vw, 38px);
+  font-weight: 800;
+}
+.ai-dart.revealed { background: #245785; animation: ai-dart-reveal 220ms ease-out; }
+@keyframes ai-dart-reveal {
+  from { opacity: .3; transform: translateY(6px) scale(.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-dart.revealed { animation: none; }
+}

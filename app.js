@@ -1,3 +1,129 @@
+const AI_LEVELS = [
+  { name: "Anfänger", average: "15–25", precision: .02, single: .18, nickname: "Der Neuling" },
+  { name: "Gelegenheitsspieler", average: "25–35", precision: .06, single: .28, nickname: "Feierabend" },
+  { name: "Freizeitspieler", average: "35–45", precision: .11, single: .40, nickname: "Die ruhige Hand" },
+  { name: "Stammspieler", average: "45–60", precision: .18, single: .50, nickname: "Der Kapitän" },
+  { name: "Vereinsspieler", average: "60–75", precision: .25, single: .60, nickname: "Triple Trouble" },
+  { name: "Experte", average: "75–90", precision: .34, single: .65, nickname: "Deadeye" },
+  { name: "Meister", average: "90–105", precision: .43, single: .70, nickname: "The Finisher" }
+];
+const AI_FIRST_NAMES = ["Ben", "Tobi", "Jan", "Frank", "Mara", "Alex", "Viktor", "Lena", "Sam", "Nico", "Jule", "Robin", "Kim", "Luca", "Sven", "Nina", "Tom", "Lea", "Max", "Emil"];
+
+function renderAiSetup() {
+  return `<div><p class="hint">Gegner</p><div class="segmented">
+    <button class="choice ${!state.setup.aiEnabled ? "active" : ""}" data-action="set-ai-enabled" data-enabled="false" aria-pressed="${!state.setup.aiEnabled}">Mitspielende / Solo</button>
+    <button class="choice ${state.setup.aiEnabled ? "active" : ""}" data-action="set-ai-enabled" data-enabled="true" aria-pressed="${state.setup.aiEnabled}">KI-Gegner</button>
+    </div>${state.setup.aiEnabled ? `<div class="ai-levels" role="group" aria-label="KI-Spielstärke">${AI_LEVELS.map((level, index) => `<button class="choice ${state.setup.aiLevel === index + 1 ? "active" : ""}" data-action="set-ai-level" data-level="${index + 1}" aria-pressed="${state.setup.aiLevel === index + 1}"><strong>${index + 1} · ${level.name}</strong><span>Ø ca. ${level.average}</span></button>`).join("")}</div><p class="hint">Ungefährer Schnitt pro drei Darts. Spiele zählen zur normalen Statistik.</p>` : ""}</div>`;
+}
+
+function createAiPlayer(level) {
+  const definition = AI_LEVELS[level - 1];
+  const saved = state.setup.aiNameBags[level] || {};
+  let remaining = Array.isArray(saved.remaining) ? saved.remaining.filter((name) => AI_FIRST_NAMES.includes(name)) : [];
+  if (!remaining.length) {
+    remaining = [...AI_FIRST_NAMES];
+    for (let index = remaining.length - 1; index > 0; index--) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [remaining[index], remaining[other]] = [remaining[other], remaining[index]];
+    }
+    if (remaining.at(-1) === saved.last) [remaining[0], remaining[remaining.length - 1]] = [remaining.at(-1), remaining[0]];
+  }
+  const first = remaining.pop();
+  state.setup.aiNameBags[level] = { remaining, last: first };
+  return { ...createPlayer(`${first} „${definition.nickname}“`, colors[(level - 1) % colors.length]), id: `ai-${createId()}`, aiLevel: level, guest: true };
+}
+
+function isAiTurn(game) {
+  return Boolean(game && !game.finishedAt && game.players[game.currentIndex]?.aiLevel);
+}
+
+function simulateAiDart(target, level, random) {
+  const ability = AI_LEVELS[level - 1];
+  const number = target.value / ({ single: 1, double: 2, triple: 3 }[target.type] || 1);
+  const hitChance = target.type === "single" ? .35 + ability.precision : ability.precision;
+  if (random() < hitChance) return { ...target };
+  if (random() < .12) return { value: 0, label: "0", type: "miss" };
+  if (target.type === "bull" || target.type === "bullseye") {
+    if (random() < .25) return { value: 25, label: "Bull", type: "bull" };
+    const value = 1 + Math.floor(random() * 20);
+    return { value, label: String(value), type: "single" };
+  }
+  const board = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+  const index = board.indexOf(number);
+  const value = random() < ability.single ? number : board[(index + (random() < .5 ? 1 : 19)) % 20];
+  return { value, label: String(value), type: "single" };
+}
+
+function planAiTurn(game) {
+  // Replaying the same turn after reload must not roll a different result.
+  let seed = 2166136261;
+  for (const character of `${game.id}:${game.currentIndex}:${game.revision}:${game.players[game.currentIndex].roundDetails.length}:${game.players[game.currentIndex].remaining}`) {
+    seed = Math.imul(seed ^ character.charCodeAt(0), 16777619) >>> 0;
+  }
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const trial = { ...game, currentThrows: [] };
+  const level = game.players[game.currentIndex].aiLevel;
+  for (let index = 0; index < 3; index++) {
+    const turn = evaluateTurn(trial);
+    if (turn.terminal) break;
+    const route = getCheckoutRoutes(turn.remaining, 3 - index, game.checkout)[0];
+    const target = route?.[0] || (turn.remaining > 60
+      ? { value: 60, label: "T20", type: "triple" }
+      : { value: Math.min(20, Math.max(1, turn.remaining - (game.checkout === "double" ? 2 : 0))), type: "single" });
+    target.label = target.label || String(target.value);
+    trial.currentThrows.push(simulateAiDart(target, level, random));
+  }
+  return trial.currentThrows;
+}
+
+function renderAiTurn(game) {
+  const player = game.players[game.currentIndex];
+  const playback = aiPlayback?.key === `${game.id}:${game.revision}` ? aiPlayback : null;
+  return `<section class="panel panel-pad ai-turn" aria-label="KI-Aufnahme"><h2>${escapeHtml(player.name)}</h2><p class="hint">KI Stufe ${player.aiLevel} · Ø ca. ${AI_LEVELS[player.aiLevel - 1].average}</p>
+    <div class="ai-darts" aria-live="polite">${[0, 1, 2].map((index) => `<span class="ai-dart ${playback && index < playback.revealed ? "revealed" : ""}">${playback && index < playback.revealed ? escapeHtml(playback.darts[index]?.label || "–") : "·"}</span>`).join("")}</div>
+    <div class="actions"><button class="secondary" data-action="skip-ai">Animation überspringen</button><button class="danger" data-action="cancel-game">Spiel abbrechen</button></div></section>`;
+}
+
+function scheduleAiTurn() {
+  const game = state.activeGame;
+  if (!isAiTurn(game)) {
+    window.clearTimeout(aiTimer);
+    aiPlayback = null;
+    return;
+  }
+  const key = `${game.id}:${game.revision}`;
+  if (aiPlayback?.key === key) return;
+  window.clearTimeout(aiTimer);
+  aiPlayback = { key, darts: planAiTurn(game), revealed: 0 };
+  aiTimer = window.setTimeout(advanceAiPlayback, 350);
+}
+
+function advanceAiPlayback() {
+  const game = state.activeGame;
+  if (!isAiTurn(game) || aiPlayback?.key !== `${game.id}:${game.revision}`) return;
+  if (aiPlayback.revealed < aiPlayback.darts.length) {
+    aiPlayback.revealed++;
+    renderMainOnly();
+    aiTimer = window.setTimeout(advanceAiPlayback, 500);
+  } else finishAiTurn();
+}
+
+function finishAiTurn() {
+  const game = state.activeGame;
+  if (!isAiTurn(game) || aiPlayback?.key !== `${game.id}:${game.revision}`) return;
+  window.clearTimeout(aiTimer);
+  if (game.aiOwnerId !== DEVICE_ID) {
+    state.message = "Die KI-Aufnahme wird auf dem Gerät abgeschlossen, auf dem das Spiel gestartet wurde.";
+    renderMainOnly();
+    return;
+  }
+  game.currentThrows = clone(aiPlayback.darts);
+  submitRound(true);
+}
+
 const STORAGE_KEY = "dartabend.local.v1";
 const DEVICE_ID_KEY = "nobsiboard.device.id";
 const DEFAULT_FAMILY_CODE = "NOBSI-DART-8K4P";
@@ -78,6 +204,9 @@ const defaultState = {
     checkout: "straight",
     checkoutHelp: true,
     rouletteScope: "single",
+    aiEnabled: false,
+    aiLevel: 3,
+    aiNameBags: {},
     selectedPlayerIds: []
   },
   sync: {
@@ -97,6 +226,8 @@ const defaultState = {
 
 let state = loadState();
 let guestPlayers = [];
+let aiPlayback = null;
+let aiTimer = null;
 let avatarEditorPlayerId = null;
 let activeStatsPlayerId = null;
 let activeMatchId = null;
@@ -246,6 +377,9 @@ function normalizeSetup(setup = {}) {
   result.startScore = Number(result.startScore) === 301 ? 301 : 501;
   result.checkout = result.checkout === "double" ? "double" : "straight";
   result.checkoutHelp = result.checkoutHelp !== false;
+  result.aiEnabled = result.aiEnabled === true;
+  result.aiLevel = Math.max(1, Math.min(7, Math.round(Number(result.aiLevel) || 3)));
+  result.aiNameBags = result.aiNameBags && typeof result.aiNameBags === "object" ? result.aiNameBags : {};
   result.rouletteScope = result.rouletteScope === "all" ? "all" : "single";
   result.selectedPlayerIds = Array.isArray(result.selectedPlayerIds) ? result.selectedPlayerIds : [];
   return result;
@@ -545,6 +679,7 @@ function render() {
     focusedAvatarChoice?.focus({ preventScroll: true });
   }
   syncModePickerUI();
+  scheduleAiTurn();
 }
 
 function renderMainContent() {
@@ -581,6 +716,7 @@ function renderMainOnly() {
   if (overlayRoot && !isRestjagdIntroVisible() && !isRouletteIntroVisible()
     && !(avatarEditorPlayerId && overlayRoot.querySelector(".avatar-editor"))) overlayRoot.innerHTML = renderOverlays();
   syncModePickerUI();
+  scheduleAiTurn();
 }
 
 function renderInstallButton() {
@@ -694,6 +830,7 @@ function renderGameView() {
             <p class="hint">Das genaue Feld muss getroffen werden. Bull und Bullseye zaehlen getrennt.</p>
           </div>` : ""}
 
+          ${mode.kind === "classic" ? renderAiSetup() : ""}
           <div>
             <p class="hint">Checkout</p>
             <div class="segmented" role="group" aria-label="Checkout-Regel">
@@ -713,7 +850,7 @@ function renderGameView() {
               ${guestPlayers.map((player) => renderGuestOption(player)).join("")}
             </div>
             ${playerCount < mode.minPlayers ? `<p class="footer-note">Waehle mindestens ${mode.minPlayers === 1 ? "einen Spieler" : "zwei Spieler"} oder fuege Gaeste hinzu.</p>` : ""}
-            ${mode.kind === "classic" && playerCount === 1 ? '<p class="hint">Solo-Runde: Wuerfe und Bestwerte werden gespeichert, aber keine Siege oder Ranglistenpunkte vergeben.</p>' : ""}
+            ${mode.kind === "classic" && playerCount === 1 && !state.setup.aiEnabled ? '<p class="hint">Solo-Runde: Wuerfe und Bestwerte werden gespeichert, aber keine Siege oder Ranglistenpunkte vergeben.</p>' : ""}
           </div>
 
           <form class="form-row compact-form" data-action="add-guest-form">
@@ -1169,7 +1306,8 @@ function renderActiveGame() {
         ${game.players.map((player, index) => renderScoreCard(player, index === game.currentIndex && !isFinished)).join("")}
       </div>`}
 
-      ${!isFinished || game.checkoutEdit ? `
+      ${current.aiLevel && !isFinished ? renderAiTurn(game) : ""}
+      ${(!isFinished || game.checkoutEdit) && !current.aiLevel ? `
         <div class="turn-panel">
           <div class="turn-head">
             <div>
@@ -1634,6 +1772,7 @@ function getGlobalFeaturedCounts() {
   const counts = Object.fromEntries(globalTrackedDarts.map((dart) => [dart.label, 0]));
   getClassicMatches().forEach((match) => {
     (match.players || []).forEach((player) => {
+      if (player.aiLevel) return;
       globalTrackedDarts.forEach((dart) => {
         counts[dart.label] += Number((player.dartCounts || {})[dart.label] || 0);
       });
@@ -1697,7 +1836,7 @@ function renderHistoryRow(match) {
     <button class="history-row history-button" data-action="show-match-details" data-match-id="${escapeHtml(match.id)}">
       <div>
         <strong>${solo ? `${escapeHtml(winner ? winner.name : "Unbekannt")}: ${match.startScore} solo geschafft` : `${escapeHtml(winner ? winner.name : "Unbekannt")} gewonnen`}</strong>
-        <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${solo ? "Solo" : match.players.map((player) => escapeHtml(player.name)).join(" gegen ")}</div>
+        <div class="metric-line">${date} - ${match.startScore} - ${match.checkout === "double" ? "Double Out" : "Einfach"} - ${solo ? "Solo" : match.players.map((player) => escapeHtml(player.name) + (player.aiLevel ? ` · KI Stufe ${player.aiLevel}` : "")).join(" gegen ")}</div>
         ${renderMatchHighlights(match)}
       </div>
       <span class="small-pill">${solo ? "Solo" : "+3"}</span>
@@ -2763,6 +2902,7 @@ function normalizeRemoteActiveGame(data) {
   return {
     ...base,
     finishedAt: normalizeDateValue(data.finishedAt) || null,
+    aiOwnerId: String(data.aiOwnerId || ""),
     startingIndex: Math.max(0, Math.min(Number(data.startingIndex || 0), base.players.length - 1)),
     sharedRemaining: Number(data.sharedRemaining ?? base.startScore),
     rouletteScope: data.rouletteScope === "all" ? "all" : "single",
@@ -2805,10 +2945,11 @@ function normalizeRemoteMatch(id, data) {
     winnerId: data.winnerId || "",
     players: data.players.map((player, index) => ({
       id: player.id || `unknown-${index}`,
-      name: String(player.name || "Spieler").slice(0, 24),
+      name: String(player.name || "Spieler").slice(0, player.aiLevel ? 64 : 24),
       color: player.color || colors[index % colors.length],
       avatar: normalizeAvatar(player.avatar, player.color || colors[index % colors.length]),
       guest: Boolean(player.guest),
+      aiLevel: Math.max(0, Math.min(7, Math.round(Number(player.aiLevel) || 0))),
       rouletteEliminated: Boolean(player.rouletteEliminated),
       rouletteSurvived: Number(player.rouletteSurvived || 0),
       remaining: Number(player.remaining || 0),
@@ -2875,6 +3016,7 @@ function prepareActiveGameForRemote(game) {
     rouletteRoundPlayers: isDartRoulette(game) ? game.rouletteRoundPlayers : null,
     roulettePending: isDartRoulette(game) ? game.roulettePending : null,
     rouletteTarget: isDartRoulette(game) ? game.rouletteTarget : null,
+    aiOwnerId: game.aiOwnerId || null,
     startingIndex: game.startingIndex || 0,
     dartsThrown: game.dartsThrown || 0,
     lastSavedRound: game.lastSavedRound || [],
@@ -2912,6 +3054,7 @@ function createGame(players, setup, startingIndex = 0, revision = 0) {
   return {
     id: createId(),
     mode: restjagd ? "restjagd" : roulette ? "dartroulette" : "classic",
+    aiOwnerId: !restjagd && !roulette && players.some((player) => player.aiLevel) ? DEVICE_ID : null,
     supersededGameIds: [...new Set([...(state.sync.retiredGameIds || []), ...(setup.supersededGameIds || []), ...(setup.id ? [setup.id] : [])])].slice(-64),
     startScore,
     rouletteScope: roulette ? rouletteScope : null,
@@ -2939,6 +3082,7 @@ function createGame(players, setup, startingIndex = 0, revision = 0) {
       color: player.color,
       avatar: normalizeAvatar(player.avatar, player.color),
       guest: Boolean(player.guest),
+      aiLevel: Math.max(0, Math.min(7, Math.round(Number(player.aiLevel) || 0))),
       rouletteEliminated: false,
       rouletteSurvived: 0,
       remaining: restjagd ? 0 : startScore,
@@ -2960,6 +3104,7 @@ function startGame() {
   const selected = state.setup.selectedPlayerIds.map((id) => state.players.find((player) => player.id === id)).filter(Boolean);
   const allPlayers = [...selected, ...guestPlayers];
   if (allPlayers.length < mode.minPlayers) return;
+  if (mode.kind === "classic" && state.setup.aiEnabled) allPlayers.push(createAiPlayer(state.setup.aiLevel));
   state.activeGame = createGame(allPlayers, { ...state.setup, checkout: mode.fixedCheckout || state.setup.checkout });
   checkoutHelpOpen = false;
   guestPlayers = [];
@@ -3063,8 +3208,9 @@ function submitRouletteTurn() {
   queueActiveGameSync(expectedRevision);
 }
 
-function submitRound() {
+function submitRound(fromAi = false) {
   const game = state.activeGame;
+  if (isAiTurn(game) && (!fromAi || game.aiOwnerId !== DEVICE_ID)) return;
   if (!game || game.finishedAt) return;
   checkoutHelpOpen = false;
   if (isDartRoulette(game)) {
@@ -3107,7 +3253,7 @@ function submitRound() {
     game.finishedAt = new Date().toISOString();
     game.winnerId = player.id;
     game.lastReaction = { playerId: player.id, type: "winner" };
-    game.checkoutEdit = { before };
+    game.checkoutEdit = player.aiLevel ? null : { before };
     if (!isRestjagd(game)) {
       state.matches = state.matches.filter((match) => match.id !== game.id);
       delete state.sync.matchTombstones[game.id];
@@ -3150,6 +3296,7 @@ function scrollToActiveScore() {
 }
 
 function undo() {
+  if (isAiTurn(state.activeGame)) return;
   const game = state.activeGame;
   if (!game || game.finishedAt || !game.history.length) return;
   const expectedRevision = Number(game.revision || 0);
@@ -3175,6 +3322,7 @@ function createUndoSnapshot(game) {
 }
 
 function addDart(value, label, type) {
+  if (isAiTurn(state.activeGame)) return;
   const original = state.activeGame;
   if (!original || (original.finishedAt && !original.checkoutEdit) || isRouletteIntroVisible()) return;
   const entry = getDartEntryGame(original);
@@ -3194,6 +3342,7 @@ function addDart(value, label, type) {
 }
 
 function selectDart(index) {
+  if (isAiTurn(state.activeGame)) return;
   const game = state.activeGame;
   if (!game || !getDartEntryGame(game).currentThrows[index]) return;
   inputGameId = game.id;
@@ -3203,6 +3352,7 @@ function selectDart(index) {
 }
 
 function setDartType(type) {
+  if (isAiTurn(state.activeGame)) return;
   const original = state.activeGame;
   if (!original || !["single", "double", "triple"].includes(type) || isRouletteIntroVisible()) return;
   const index = getSelectedDartIndex(original);
@@ -3301,6 +3451,7 @@ function recordDartDetails(player, throws) {
 }
 
 function removeLastDart() {
+  if (isAiTurn(state.activeGame)) return;
   const original = state.activeGame;
   if (!original || (original.finishedAt && !original.checkoutEdit) || !getDartEntryGame(original).currentThrows.length) return;
   const game = reopenCheckoutForEdit();
@@ -3311,6 +3462,7 @@ function removeLastDart() {
 }
 
 function clearThrows() {
+  if (isAiTurn(state.activeGame)) return;
   if (!state.activeGame || (state.activeGame.finishedAt && !state.activeGame.checkoutEdit)) return;
   const game = reopenCheckoutForEdit();
   game.currentThrows = [];
@@ -3590,6 +3742,15 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button || button.disabled) return;
   const action = button.dataset.action;
+  if (action === "set-ai-enabled" && !state.activeGame) {
+    state.setup.aiEnabled = button.dataset.enabled === "true";
+    saveAndRenderMain();
+  }
+  if (action === "set-ai-level" && !state.activeGame) {
+    state.setup.aiLevel = Number(button.dataset.level);
+    saveAndRenderMain();
+  }
+  if (action === "skip-ai") finishAiTurn();
 
   if (action === "skip-restjagd-intro") skipRestjagdIntro();
   if (action === "skip-roulette-intro") skipRouletteIntro();
@@ -3814,3 +3975,4 @@ if (isSyncEnabled()) {
   setSyncRuntime(navigator.onLine ? "syncing" : "offline", navigator.onLine ? "Familien-Daten werden geladen." : "Offline. Ergebnisse werden spaeter automatisch gesendet.", "", false);
   syncWithFirebase({ manual: false }).then(resumePendingActiveGameSync);
 }
+
