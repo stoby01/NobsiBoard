@@ -40,7 +40,9 @@ function isAiTurn(game) {
 function simulateAiDart(target, level, random) {
   const ability = AI_LEVELS[level - 1];
   const number = target.value / ({ single: 1, double: 2, triple: 3 }[target.type] || 1);
-  const hitChance = target.type === "single" ? .35 + ability.precision : ability.precision;
+  const doublePrecision = [0.08, 0.12, 0.16][level - 1] || ability.precision;
+  const hitChance = target.type === "single" ? .35 + ability.precision
+    : target.type === "double" ? doublePrecision : ability.precision;
   if (random() < hitChance) return { ...target };
   if (random() < .12) return { value: 0, label: "0", type: "miss" };
   if (target.type === "bull" || target.type === "bullseye") {
@@ -52,6 +54,19 @@ function simulateAiDart(target, level, random) {
   const index = board.indexOf(number);
   const value = random() < ability.single ? number : board[(index + (random() < .5 ? 1 : 19)) % 20];
   return { value, label: String(value), type: "single" };
+}
+
+function getAiCheckoutRoute(remaining, dartsLeft, checkout) {
+  if (checkout === "straight" && Number.isInteger(remaining) && remaining > 0
+    && dartsLeft >= 1 && dartsLeft <= 3 && remaining <= 20 * dartsLeft) {
+    const route = [];
+    for (let rest = remaining; rest > 0; rest -= 20) {
+      const value = Math.min(20, rest);
+      route.push({ value, label: String(value), type: "single" });
+    }
+    return route;
+  }
+  return getCheckoutRoutes(remaining, dartsLeft, checkout)[0] || [];
 }
 
 function planAiTurn(game) {
@@ -70,7 +85,7 @@ function planAiTurn(game) {
   for (let index = 0; index < 3; index++) {
     const turn = evaluateTurn(trial);
     if (turn.terminal) break;
-    const route = getCheckoutRoutes(turn.remaining, 3 - index, game.checkout)[0];
+    const route = getAiCheckoutRoute(turn.remaining, 3 - index, game.checkout);
     const target = route?.[0] || (turn.remaining > 60
       ? { value: 60, label: "T20", type: "triple" }
       : { value: Math.min(20, Math.max(1, turn.remaining - (game.checkout === "double" ? 2 : 0))), type: "single" });
@@ -83,7 +98,12 @@ function planAiTurn(game) {
 function renderAiTurn(game) {
   const player = game.players[game.currentIndex];
   const playback = aiPlayback?.key === `${game.id}:${game.revision}` ? aiPlayback : null;
+  const visibleThrows = playback ? playback.darts.slice(0, playback.revealed) : [];
+  const projection = evaluateTurn({ ...game, currentThrows: visibleThrows });
+  const route = !game.startSelection && !projection.terminal
+    ? getAiCheckoutRoute(projection.remaining, 3 - visibleThrows.length, game.checkout) : [];
   return `<section class="panel panel-pad ai-turn" aria-label="KI-Aufnahme"><h2>${escapeHtml(player.name)}</h2><p class="hint">KI Stufe ${player.aiLevel} · Ø ca. ${AI_LEVELS[player.aiLevel - 1].average}</p>
+    ${route.length ? `<div class="checkout-assist" aria-label="Möglicher KI-Checkout"><span>Checkout möglich</span><strong>${escapeHtml(formatCheckoutRoute(route))}</strong></div>` : ""}
     <div class="ai-darts" aria-live="polite">${(game.startSelection ? [0] : [0, 1, 2]).map((index) => `<span class="ai-dart ${playback && index < playback.revealed ? "revealed" : ""}">${playback && index < playback.revealed ? escapeHtml(playback.darts[index]?.label || "–") : "·"}</span>`).join("")}</div>
     <div class="actions"><button class="secondary" data-action="skip-ai">Animation überspringen</button><button class="danger" data-action="cancel-game">Spiel abbrechen</button></div></section>`;
 }

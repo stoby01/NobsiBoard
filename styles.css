@@ -2776,3 +2776,12 @@ body.roulette-intro-open { overflow: hidden; }
 .starting-winner h2 { overflow-wrap: anywhere; margin-bottom: 16px; }
 .start-selection .throw-summary > .primary { width: 100%; }
 .start-selection .turn-head .hint { color: rgba(255,255,255,.72); }
+.ai-turn .checkout-assist {
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: #ede9fe;
+  color: #5b21b6;
+}
+.ai-turn .checkout-assist strong { color: #4c1d95; }

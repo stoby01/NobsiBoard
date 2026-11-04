@@ -36,6 +36,41 @@ function harness(saved) {
 function startAi(h, level = 3) {
   h.run(`state.setup.aiEnabled=true;state.setup.aiLevel=${level};state.setup.selectedPlayerIds=[state.players[0].id];startGame()`);
 }
+test('AI prefers reachable single-only finishes and all suggested routes obey checkout rules',()=>{
+  const h=harness();startAi(h);
+  assert.equal(h.run('getAiCheckoutRoute(20,3,"straight")[0].type'),'single');
+  assert.deepEqual(h.json('getAiCheckoutRoute(40,3,"straight").map(d=>d.label)'),['20','20']);
+  assert.equal(h.run('getAiCheckoutRoute(20,3,"double")[0].label'),'D10');
+  assert.equal(h.run(`(()=>{const game=state.activeGame;for(const checkout of ['straight','double'])for(let rest=1;rest<=180;rest++)for(let left=1;left<=3;left++){
+    const route=getAiCheckoutRoute(rest,left,checkout);if(!route.length)continue;
+    game.checkout=checkout;game.players[0].remaining=rest;game.currentThrows=route;
+    if(route.length>left||!evaluateTurn(game).finished)return false;
+    if(checkout==='straight'&&rest<=20*left&&route.some(d=>d.type!=='single'))return false;
+  }return true})()`),true);
+  h.run('state.activeGame.currentIndex=1;state.activeGame.checkout="straight";state.activeGame.players[1].remaining=20;let aimed=[];simulateAiDart=(target)=>{aimed.push(target);return target};planAiTurn(state.activeGame)');
+  assert.equal(h.run('aimed[0].type'),'single');
+});
+test('easy bots have 8, 12 and 16 percent double precision; triple strength stays separate',()=>{
+  const h=harness();
+  for(const [level,chance] of [[1,.08],[2,.12],[3,.16]]){
+    assert.equal(h.run(`simulateAiDart({value:20,label:'D10',type:'double'},${level},()=>${chance-.001}).type`),'double');
+    assert.notEqual(h.run(`simulateAiDart({value:20,label:'D10',type:'double'},${level},()=>${chance}).type`),'double');
+    assert.notEqual(h.run(`simulateAiDart({value:60,label:'T20',type:'triple'},${level},()=>${chance-.001}).type`),'triple');
+  }
+});
+test('AI checkout display follows revealed darts, disappears on bust and stays hidden during starting selection',()=>{
+  const h=harness();startAi(h);
+  h.run('state.activeGame.currentIndex=1;state.activeGame.players[1].remaining=40;state.activeGame.checkout="straight";aiPlayback={key:`${state.activeGame.id}:${state.activeGame.revision}`,darts:[{value:20,label:"20",type:"single"},{value:20,label:"20",type:"single"}],revealed:0}');
+  assert.match(h.run('renderAiTurn(state.activeGame)'),/20 → 20/);
+  h.run('aiPlayback.revealed=1');
+  assert.match(h.run('renderAiTurn(state.activeGame)'),/<strong>20<\/strong>/);
+  h.run('aiPlayback.revealed=2');
+  assert.doesNotMatch(h.run('renderAiTurn(state.activeGame)'),/Checkout möglich/);
+  h.run('aiPlayback.darts=[{value:60,label:"T20",type:"triple"}];aiPlayback.revealed=1');
+  assert.doesNotMatch(h.run('renderAiTurn(state.activeGame)'),/Checkout möglich/);
+  h.run('aiPlayback.revealed=0;state.activeGame.startSelection={round:1}');
+  assert.doesNotMatch(h.run('renderAiTurn(state.activeGame)'),/Checkout möglich/);
+});
 test('family reset retains usable AI defaults',()=>{
   const h=harness();
   h.run('resetLocalFamilyState("TEST-FAMILY");state.players=[createPlayer("Lokaler Test",colors[0])];state.setup.selectedPlayerIds=[state.players[0].id];state.setup.aiEnabled=true;startGame()');
