@@ -1,9 +1,9 @@
-const CACHE_NAME = "nobsiboard-v69";
+const CACHE_NAME = "nobsiboard-v70";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css?v=69",
-  "./app.js?v=69",
+  "./styles.css?v=70",
+  "./app.js?v=70",
   "./manifest.webmanifest",
   "./logo-512.png",
   "./header-transparent.png"

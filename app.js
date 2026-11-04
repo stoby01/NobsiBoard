@@ -1,19 +1,83 @@
 const AI_LEVELS = [
-  { name: "Anfänger", average: "15–25", precision: .02, single: .18, nickname: "Der Neuling" },
-  { name: "Gelegenheitsspieler", average: "25–35", precision: .06, single: .28, nickname: "Feierabend" },
-  { name: "Freizeitspieler", average: "35–45", precision: .11, single: .40, nickname: "Die ruhige Hand" },
-  { name: "Stammspieler", average: "45–60", precision: .18, single: .50, nickname: "Der Kapitän" },
-  { name: "Vereinsspieler", average: "60–75", precision: .25, single: .60, nickname: "Triple Trouble" },
-  { name: "Experte", average: "75–90", precision: .34, single: .65, nickname: "Deadeye" },
-  { name: "Meister", average: "90–105", precision: .43, single: .70, nickname: "The Finisher" }
+  {
+    name: "Anfänger",
+    averages: {
+      301: { straight: "17–27", double: "12–22" },
+      501: { straight: "16–26", double: "13–23" }
+    },
+    precision: .02,
+    single: .18,
+    nickname: "Der Neuling"
+  },
+  {
+    name: "Gelegenheitsspieler",
+    averages: {
+      301: { straight: "26–36", double: "21–31" },
+      501: { straight: "25–35", double: "22–32" }
+    },
+    precision: .06,
+    single: .28,
+    nickname: "Feierabend"
+  },
+  {
+    name: "Freizeitspieler",
+    averages: {
+      301: { straight: "37–47", double: "29–39" },
+      501: { straight: "38–48", double: "32–42" }
+    },
+    precision: .11,
+    single: .40,
+    nickname: "Die ruhige Hand"
+  },
+  {
+    name: "Stammspieler",
+    averages: {
+      301: { straight: "48–58", double: "39–49" },
+      501: { straight: "50–60", double: "43–53" }
+    },
+    precision: .18,
+    single: .50,
+    nickname: "Der Kapitän"
+  },
+  {
+    name: "Vereinsspieler",
+    averages: {
+      301: { straight: "60–70", double: "50–60" },
+      501: { straight: "62–72", double: "56–66" }
+    },
+    precision: .25,
+    single: .60,
+    nickname: "Triple Trouble"
+  },
+  {
+    name: "Experte",
+    averages: {
+      301: { straight: "70–80", double: "63–73" },
+      501: { straight: "73–83", double: "70–80" }
+    },
+    precision: .34,
+    single: .65,
+    nickname: "Deadeye"
+  },
+  {
+    name: "Meister",
+    averages: {
+      301: { straight: "81–91", double: "76–86" },
+      501: { straight: "87–97", double: "82–92" }
+    },
+    precision: .43,
+    single: .70,
+    nickname: "The Finisher"
+  }
 ];
+const aiCheckoutRouteCache = new Map();
 const AI_FIRST_NAMES = ["Ben", "Tobi", "Jan", "Frank", "Mara", "Alex", "Viktor", "Lena", "Sam", "Nico", "Jule", "Robin", "Kim", "Luca", "Sven", "Nina", "Tom", "Lea", "Max", "Emil"];
 
 function renderAiSetup() {
   return `<div><p class="hint">Gegner</p><div class="segmented">
     <button class="choice ${!state.setup.aiEnabled ? "active" : ""}" data-action="set-ai-enabled" data-enabled="false" aria-pressed="${!state.setup.aiEnabled}">Mitspielende / Solo</button>
     <button class="choice ${state.setup.aiEnabled ? "active" : ""}" data-action="set-ai-enabled" data-enabled="true" aria-pressed="${state.setup.aiEnabled}">KI-Gegner</button>
-    </div>${state.setup.aiEnabled ? `<div class="ai-levels" role="group" aria-label="KI-Spielstärke">${AI_LEVELS.map((level, index) => `<button class="choice ${state.setup.aiLevel === index + 1 ? "active" : ""}" data-action="set-ai-level" data-level="${index + 1}" aria-pressed="${state.setup.aiLevel === index + 1}"><strong>${index + 1} · ${level.name}</strong><span>Ø ca. ${level.average}</span></button>`).join("")}</div><p class="hint">Ungefährer Schnitt pro drei Darts. Spiele zählen zur normalen Statistik.</p>` : ""}</div>`;
+    </div>${state.setup.aiEnabled ? `<div class="ai-levels" role="group" aria-label="KI-Spielstärke">${AI_LEVELS.map((level, index) => `<button class="choice ${state.setup.aiLevel === index + 1 ? "active" : ""}" data-action="set-ai-level" data-level="${index + 1}" aria-pressed="${state.setup.aiLevel === index + 1}"><strong>${index + 1} · ${level.name}</strong><span>Ø ca. ${getAiAverage(index + 1, state.setup.checkout, state.setup.startScore)}</span></button>`).join("")}</div><p class="hint">Geschätzter 3-Dart-Schnitt inklusive Checkout für ${state.setup.startScore} ${state.setup.checkout === "double" ? "Double Out" : "Single Out"}.</p>` : ""}</div>`;
 }
 
 function createAiPlayer(level) {
@@ -37,36 +101,76 @@ function isAiTurn(game) {
   return Boolean(game && !game.finishedAt && !game.startSelection?.winnerId && game.players[game.currentIndex]?.aiLevel);
 }
 
+function getAiAverage(level, checkout, startScore) {
+  const values = AI_LEVELS[level - 1].averages;
+  return values?.[startScore === 301 ? 301 : 501]?.[checkout === "double" ? "double" : "straight"];
+}
+
+function aiTargetProbability(target, level) {
+  const ability = AI_LEVELS[level - 1];
+  if (target.type === "single") return .35 + ability.precision;
+  if (target.type === "double") return [0.08, 0.12, 0.16][level - 1] || ability.precision;
+  return ability.precision;
+}
+
 function simulateAiDart(target, level, random) {
   const ability = AI_LEVELS[level - 1];
   const number = target.value / ({ single: 1, double: 2, triple: 3 }[target.type] || 1);
-  const doublePrecision = [0.08, 0.12, 0.16][level - 1] || ability.precision;
-  const hitChance = target.type === "single" ? .35 + ability.precision
-    : target.type === "double" ? doublePrecision : ability.precision;
-  if (random() < hitChance) return { ...target };
-  if (random() < .12) return { value: 0, label: "0", type: "miss" };
+  if (random() < aiTargetProbability(target, level)) return { ...target };
+  const board = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
+  const index = board.indexOf(number);
+  const neighbor = () => board[(index + (random() < .5 ? 1 : 19)) % 20];
+  const miss = { value: 0, label: "0", type: "miss" };
+  if (target.type === "double") {
+    const scatter = random();
+    if (scatter < .40) return miss;
+    if (scatter < .85) return { value: number, label: String(number), type: "single" };
+    const adjacent = neighbor();
+    return scatter < .95 ? { value: adjacent, label: String(adjacent), type: "single" }
+      : { value: adjacent * 2, label: `D${adjacent}`, type: "double" };
+  }
+  if (random() < .12) return miss;
   if (target.type === "bull" || target.type === "bullseye") {
-    if (random() < .25) return { value: 25, label: "Bull", type: "bull" };
+    if (target.type === "bull" && random() < .05) return { value: 50, label: "Bullseye", type: "bullseye" };
+    if (target.type === "bullseye" && random() < .25) return { value: 25, label: "Bull", type: "bull" };
     const value = 1 + Math.floor(random() * 20);
     return { value, label: String(value), type: "single" };
   }
-  const board = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5];
-  const index = board.indexOf(number);
-  const value = random() < ability.single ? number : board[(index + (random() < .5 ? 1 : 19)) % 20];
+  const value = random() < ability.single ? number : neighbor();
+  const scatter = random();
+  if (target.type === "triple" && value !== number && scatter < .06) return { value: value * 3, label: `T${value}`, type: "triple" };
+  if (target.type === "single" && scatter < .02) return { value: value * 2, label: `D${value}`, type: "double" };
+  if (target.type === "single" && scatter < .04) return { value: value * 3, label: `T${value}`, type: "triple" };
   return { value, label: String(value), type: "single" };
 }
 
-function getAiCheckoutRoute(remaining, dartsLeft, checkout) {
-  if (checkout === "straight" && Number.isInteger(remaining) && remaining > 0
-    && dartsLeft >= 1 && dartsLeft <= 3 && remaining <= 20 * dartsLeft) {
-    const route = [];
-    for (let rest = remaining; rest > 0; rest -= 20) {
-      const value = Math.min(20, rest);
-      route.push({ value, label: String(value), type: "single" });
+function getAiCheckoutRoute(remaining, dartsLeft, checkout, level = 3) {
+  if (!Number.isInteger(remaining) || remaining <= 0 || dartsLeft < 1 || dartsLeft > 3 || remaining > 180) return [];
+  const key = `${remaining}:${dartsLeft}:${checkout}:${level}`;
+  if (aiCheckoutRouteCache.has(key)) return aiCheckoutRouteCache.get(key);
+  const candidates = [...getCheckoutRoutes(remaining, dartsLeft, checkout)];
+  // Include large-single setups which the short human suggestion list may omit.
+  const addSingleSetups = (rest, prefix) => {
+    checkoutDarts.filter((dart) => dart.value === rest && (checkout !== "double" || ["double", "bullseye"].includes(dart.type)))
+      .forEach((finish) => candidates.push([...prefix, finish]));
+    if (prefix.length + 1 >= dartsLeft) return;
+    for (let value = 20; value >= 1; value--) {
+      if (value < rest) addSingleSetups(rest - value, [...prefix, { value, label: String(value), type: "single" }]);
     }
-    return route;
-  }
-  return getCheckoutRoutes(remaining, dartsLeft, checkout)[0] || [];
+  };
+  addSingleSetups(remaining, []);
+  const probability = (route) => route.reduce((chance, dart) => {
+    const direct = aiTargetProbability(dart, level);
+    const singleFallback = dart.type === "single" ? (1 - direct) * .88 * AI_LEVELS[level - 1].single * .96 : 0;
+    return chance * (direct + singleFallback);
+  }, 1);
+  // Break equally likely setups towards doubles that can be halved again.
+  const finishPreference = (route) => [32, 40, 16, 8, 4, 2].indexOf(route.at(-1).value);
+  candidates.sort((a, b) => probability(b) - probability(a) || a.length - b.length
+    || (finishPreference(a) < 0 ? 99 : finishPreference(a)) - (finishPreference(b) < 0 ? 99 : finishPreference(b)));
+  const route = candidates[0] || [];
+  aiCheckoutRouteCache.set(key, route);
+  return route;
 }
 
 function planAiTurn(game) {
@@ -85,7 +189,7 @@ function planAiTurn(game) {
   for (let index = 0; index < 3; index++) {
     const turn = evaluateTurn(trial);
     if (turn.terminal) break;
-    const route = getAiCheckoutRoute(turn.remaining, 3 - index, game.checkout);
+    const route = getAiCheckoutRoute(turn.remaining, 3 - index, game.checkout, level);
     const target = route?.[0] || (turn.remaining > 60
       ? { value: 60, label: "T20", type: "triple" }
       : { value: Math.min(20, Math.max(1, turn.remaining - (game.checkout === "double" ? 2 : 0))), type: "single" });
@@ -101,8 +205,8 @@ function renderAiTurn(game) {
   const visibleThrows = playback ? playback.darts.slice(0, playback.revealed) : [];
   const projection = evaluateTurn({ ...game, currentThrows: visibleThrows });
   const route = !game.startSelection && !projection.terminal
-    ? getAiCheckoutRoute(projection.remaining, 3 - visibleThrows.length, game.checkout) : [];
-  return `<section class="panel panel-pad ai-turn" aria-label="KI-Aufnahme"><h2>${escapeHtml(player.name)}</h2><p class="hint">KI Stufe ${player.aiLevel} · Ø ca. ${AI_LEVELS[player.aiLevel - 1].average}</p>
+    ? getAiCheckoutRoute(projection.remaining, 3 - visibleThrows.length, game.checkout, player.aiLevel) : [];
+  return `<section class="panel panel-pad ai-turn" aria-label="KI-Aufnahme"><h2>${escapeHtml(player.name)}</h2><p class="hint">KI Stufe ${player.aiLevel} · Ø ca. ${getAiAverage(player.aiLevel, game.checkout, game.startScore)}</p>
     ${route.length ? `<div class="checkout-assist" aria-label="Möglicher KI-Checkout"><span>Checkout möglich</span><strong>${escapeHtml(formatCheckoutRoute(route))}</strong></div>` : ""}
     <div class="ai-darts" aria-live="polite">${(game.startSelection ? [0] : [0, 1, 2]).map((index) => `<span class="ai-dart ${playback && index < playback.revealed ? "revealed" : ""}">${playback && index < playback.revealed ? escapeHtml(playback.darts[index]?.label || "–") : "·"}</span>`).join("")}</div>
     <div class="actions"><button class="secondary" data-action="skip-ai">Animation überspringen</button><button class="danger" data-action="cancel-game">Spiel abbrechen</button></div></section>`;
@@ -3265,6 +3369,15 @@ function submitRound(fromAi = false) {
   const before = createUndoSnapshot(game);
   game.history.push(before);
   if (isRestjagd(game)) game.dartsThrown += throws.length;
+  else {
+    const scored = turn.bust ? 0 : turn.score;
+    player.rounds += 1;
+    recordDartDetails(player, throws);
+    player.throwsTotal += scored;
+    player.highestThrow = Math.max(player.highestThrow, scored);
+    player.roundScores.push(scored);
+    player.roundDetails.push({ darts: clone(throws), score: scored, bust: turn.bust });
+  }
   if (turn.bust) {
     game.lastReaction = { playerId: player.id, type: "bust" };
     state.message = `${player.name}: Bust! Der Rest bleibt bei ${getGameRemaining(game)}.`;
@@ -3272,13 +3385,7 @@ function submitRound(fromAi = false) {
     if (isRestjagd(game)) {
       game.sharedRemaining = turn.remaining;
     } else {
-      player.rounds += 1;
-      recordDartDetails(player, throws);
       player.remaining = turn.remaining;
-      player.throwsTotal += turn.score;
-      player.highestThrow = Math.max(player.highestThrow, turn.score);
-      player.roundScores.push(turn.score);
-      player.roundDetails.push({ darts: clone(throws), score: turn.score, bust: false });
     }
     game.lastReaction = turn.score >= 100 ? { playerId: player.id, type: "big" } : null;
     state.message = turn.score === 180 ? "180! Sehr stark." : "";

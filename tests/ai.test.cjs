@@ -36,6 +36,89 @@ function harness(saved) {
 function startAi(h, level = 3) {
   h.run(`state.setup.aiEnabled=true;state.setup.aiLevel=${level};state.setup.selectedPlayerIds=[state.players[0].id];startGame()`);
 }
+test('bust visits record zero points and actual darts once, survive normalization, and undo cleanly',()=>{
+  const h=harness();startAi(h);
+  h.run('state.activeGame.players[0].remaining=20;state.activeGame.checkout="double";addDart(5,"5","single");addDart(20,"20","single");submitRound()');
+  assert.deepEqual(h.json('({rounds:state.activeGame.players[0].rounds,darts:state.activeGame.players[0].totalDarts,points:state.activeGame.players[0].throwsTotal,rest:state.activeGame.players[0].remaining,bust:state.activeGame.players[0].roundDetails[0].bust,score:state.activeGame.players[0].roundDetails[0].score})'),{rounds:1,darts:2,points:0,rest:20,bust:true,score:0});
+  assert.equal(h.run('normalizeRemoteActiveGame(prepareActiveGameForRemote(state.activeGame)).players[0].roundDetails[0].bust'),true);
+  h.run('state.activeGame.currentIndex=0;undo()');
+  assert.equal(h.run('state.activeGame.players[0].totalDarts'),0);
+  assert.equal(h.run('state.activeGame.players[0].rounds'),0);
+});
+test('bust then checkout gives correct round average and correction does not duplicate history',()=>{
+  const h=harness();h.run('state.setup.selectedPlayerIds=[state.players[0].id];state.setup.checkout="double";startGame();state.activeGame.players[0].remaining=20;addDart(20,"20","single");submitRound();addDart(10,"10","single");setDartType("double")');
+  assert.equal(h.run('state.matches[0].players[0].rounds'),2);
+  assert.equal(h.run('getStats().get(state.players[0].id).average'),10);
+  assert.equal(h.run('getStats().get(state.players[0].id).totalDarts'),2);
+  assert.match(h.run('renderMatchPlayerDetails(state.matches[0].players[0])'),/Bust/);
+  h.run('setDartType("single");setDartType("double")');
+  assert.equal(h.run('state.matches.length'),1);
+  assert.equal(h.run('state.matches[0].players[0].roundDetails.length'),2);
+});
+test('AI busts count equally and preserve score',()=>{
+  const h=harness();startAi(h);h.run('state.activeGame.currentIndex=1;state.activeGame.players[1].remaining=20;state.activeGame.currentThrows=[{value:60,label:"T20",type:"triple"}];submitRound(true)');
+  assert.equal(h.run('state.activeGame.players[1].rounds'),1);
+  assert.equal(h.run('state.activeGame.players[1].totalDarts'),1);
+  assert.equal(h.run('state.activeGame.players[1].remaining'),20);
+  assert.equal(h.run('state.activeGame.players[1].highestThrow'),0);
+});
+test('double scatter includes outside, same single, neighboring single and neighboring double',()=>{
+  const h=harness();
+  for(const [scatter,type,value] of [[.2,'miss',0],[.5,'single',20],[.9,'single',1],[.98,'double',2]]){
+    const result=h.json(`(()=>{const values=[.99,${scatter},.1];return simulateAiDart({value:40,label:'D20',type:'double'},1,()=>values.shift())})()`);
+    assert.equal(result.type,type);assert.equal(result.value,value);
+  }
+  assert.equal(h.run(`(()=>{const values=[.99,.5,.1,.01];return simulateAiDart({value:20,label:'20',type:'single'},1,()=>values.shift()).type})()`),'double');
+  assert.equal(h.run(`(()=>{const values=[.99,.5,.1,.03];return simulateAiDart({value:20,label:'20',type:'single'},1,()=>values.shift()).type})()`),'triple');
+});
+test('difficulty influences checkout strategy and route/display use the same level',()=>{
+  const h=harness();
+  assert.deepEqual(h.json('getAiCheckoutRoute(70,3,"double",1).map(d=>d.label)'),['20','18','D16']);
+  assert.deepEqual(h.json('getAiCheckoutRoute(70,3,"double",7).map(d=>d.label)'),['20','Bullseye']);
+  startAi(h,1);h.run('state.activeGame.currentIndex=1;state.activeGame.players[1].remaining=70;state.activeGame.checkout="double"');
+  assert.match(h.run('renderAiTurn(state.activeGame)'),/20 → 18 → D16/);
+  h.run('let targets=[];simulateAiDart=(target)=>{targets.push(target.label);return target};planAiTurn(state.activeGame)');
+  assert.deepEqual(h.json('targets'),['20','18','D16']);
+});
+test('every level offers legal routes across rests and dart counts',()=>{
+  const h=harness();startAi(h);
+  assert.equal(h.run(`(()=>{const game=state.activeGame;for(let level=1;level<=7;level++)for(const checkout of ['straight','double'])for(let rest=1;rest<=180;rest++)for(let left=1;left<=3;left++){
+    const route=getAiCheckoutRoute(rest,left,checkout,level);if(!route.length)continue;
+    game.checkout=checkout;game.players[0].remaining=rest;game.currentThrows=route;
+    if(route.length>left||!evaluateTurn(game).finished)return false;
+  }return true})()`),true);
+});
+test('average labels reflect selected score and checkout, including existing games',()=>{
+  const h=harness();startAi(h,7);
+  assert.notEqual(h.run('getAiAverage(7,"straight",301)'),h.run('getAiAverage(7,"double",501)'));
+  h.run('state.activeGame.currentIndex=1;state.activeGame.checkout="double";state.activeGame.startScore=501');
+  assert.ok(h.run('renderAiTurn(state.activeGame)').includes(h.run('getAiAverage(7,"double",501)')));
+  h.run('state.activeGame=null;state.setup.checkout="straight";state.setup.startScore=301');
+  assert.ok(h.run('renderAiSetup()').includes(h.run('getAiAverage(7,"straight",301)')));
+  assert.match(h.run('renderAiSetup()'),/301 Single Out/);
+});
+test('8400 independent full games finish with increasing strength inside the displayed average ranges',()=>{
+  const h=harness();
+  const results=h.json(`(()=>{const output=[];for(const startScore of [301,501])for(const checkout of ['straight','double'])for(let level=1;level<=7;level++){
+    let darts=0,finished=0;
+    for(let n=0;n<300;n++){
+      const game=createGame([{...createPlayer('Local simulation',colors[0]),aiLevel:level}],{startScore,checkout});
+      game.id='validation-'+level+'-'+startScore+'-'+checkout+'-'+n;
+      for(let turn=0;turn<2000;turn++){
+        game.currentThrows=planAiTurn(game);const result=evaluateTurn(game);darts+=result.usedDarts.length;game.revision++;
+        if(!result.bust)game.players[0].remaining=result.remaining;
+        if(result.finished){finished++;break}
+      }
+    }
+    output.push({startScore,checkout,level,finished,average:startScore*finished*3/darts,range:getAiAverage(level,checkout,startScore)});
+  }return output})()`);
+  for(let i=0;i<results.length;i++){
+    const result=results[i];const [min,max]=result.range.split('–').map(Number);
+    assert.equal(result.finished,300,JSON.stringify(result));
+    assert.ok(result.average>=min&&result.average<=max,JSON.stringify(result));
+    if(result.level>1)assert.ok(result.average>results[i-1].average);
+  }
+});
 test('AI prefers reachable single-only finishes and all suggested routes obey checkout rules',()=>{
   const h=harness();startAi(h);
   assert.equal(h.run('getAiCheckoutRoute(20,3,"straight")[0].type'),'single');
