@@ -212,6 +212,17 @@ function renderAiTurn(game) {
     <div class="actions"><button class="secondary" data-action="skip-ai">Animation überspringen</button><button class="danger" data-action="cancel-game">Spiel abbrechen</button></div></section>`;
 }
 
+function getAiPlaybackDelay(game, playback, initial = false) {
+  const normalDelay = initial ? 650 : 900;
+  if (game.startSelection) return normalDelay;
+  const visibleThrows = playback.darts.slice(0, playback.revealed);
+  const projection = evaluateTurn({ ...game, currentThrows: visibleThrows });
+  const remaining = projection.bust ? game.players[game.currentIndex].remaining : projection.remaining;
+  if (remaining <= 100) return 1800;
+  if (remaining <= 170) return 1300;
+  return normalDelay;
+}
+
 function scheduleAiTurn() {
   const game = state.activeGame;
   if (!isAiTurn(game)) {
@@ -223,7 +234,7 @@ function scheduleAiTurn() {
   if (aiPlayback?.key === key) return;
   window.clearTimeout(aiTimer);
   aiPlayback = { key, darts: planAiTurn(game), revealed: 0 };
-  aiTimer = window.setTimeout(advanceAiPlayback, 650);
+  aiTimer = window.setTimeout(advanceAiPlayback, getAiPlaybackDelay(game, aiPlayback, true));
 }
 
 function advanceAiPlayback() {
@@ -232,7 +243,7 @@ function advanceAiPlayback() {
   if (aiPlayback.revealed < aiPlayback.darts.length) {
     aiPlayback.revealed++;
     renderMainOnly();
-    aiTimer = window.setTimeout(advanceAiPlayback, 900);
+    aiTimer = window.setTimeout(advanceAiPlayback, getAiPlaybackDelay(game, aiPlayback));
   } else finishAiTurn();
 }
 

@@ -36,6 +36,24 @@ function harness(saved) {
 function startAi(h, level = 3) {
   h.run(`state.setup.aiEnabled=true;state.setup.aiLevel=${level};state.setup.selectedPlayerIds=[state.players[0].id];startGame()`);
 }
+test('AI reveal pacing changes at 170 and 100 using visible darts, with safe bust and starting-selection timing',()=>{
+  const h=harness();startAi(h);
+  h.run('state.activeGame.currentIndex=1;state.activeGame.players[1].remaining=171;let playback={darts:[{value:1,label:"1",type:"single"},{value:70,label:"70",type:"single"}],revealed:0}');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback,true)'),650);
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),900);
+  h.run('playback.revealed=1');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),1300);
+  h.run('playback.revealed=2');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),1800);
+  h.run('state.activeGame.players[1].remaining=101;playback.revealed=0');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback,true)'),1300);
+  h.run('playback.revealed=1');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),1800);
+  h.run('state.activeGame.players[1].remaining=170;playback={darts:[{value:180,label:"180",type:"single"}],revealed:1}');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),1300);
+  h.run('state.activeGame.startSelection={round:1}');
+  assert.equal(h.run('getAiPlaybackDelay(state.activeGame,playback)'),900);
+});
 test('bust visits record zero points and actual darts once, survive normalization, and undo cleanly',()=>{
   const h=harness();startAi(h);
   h.run('state.activeGame.players[0].remaining=20;state.activeGame.checkout="double";addDart(5,"5","single");addDart(20,"20","single");submitRound()');
